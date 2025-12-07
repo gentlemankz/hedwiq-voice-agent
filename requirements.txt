@@ -1,0 +1,18 @@
+# LiveKit Agents SDK with plugins
+# IMPORTANT: Python 3.14 is NOT supported by livekit-agents
+# Use Python 3.12 or 3.13 instead
+livekit-agents>=1.2.0,<2.0.0
+livekit-plugins-deepgram>=1.2.0,<2.0.0
+livekit-plugins-openai>=1.2.0,<2.0.0
+
+# Optional: VAD plugin for voice activity detection
+# livekit-plugins-silero>=1.2.0,<2.0.0
+
+# Data validation
+pydantic>=2.0.0
+
+# Environment variables
+python-dotenv>=1.0.0
+
+# OpenAI SDK (for Azure OpenAI support)
+openai>=1.0.0
