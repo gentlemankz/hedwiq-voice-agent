@@ -191,15 +191,65 @@ python hedwiq_agent.py start
 - Make sure you're running in `dev` mode, not `start`
 - Check that LIVEKIT_URL, LIVEKIT_API_KEY, and LIVEKIT_API_SECRET are correct
 
+## Document Reference Feature (Phase 1)
+
+The agent now supports real-time document reference detection. Admins can upload PDF documents, and the system automatically detects when speakers reference content from those documents.
+
+### Running the Document API
+
+In addition to the main agent, you can run a separate HTTP API server for document upload:
+
+```bash
+# Start the document upload API (default port 8000)
+python document_api.py
+
+# Or with custom port
+DOCUMENT_API_PORT=8080 python document_api.py
+```
+
+The document API provides:
+- `POST /documents/upload` - Upload and process PDF documents
+- `GET /documents/{id}/pdf` - Retrieve PDF file content
+- `GET /documents/{id}` - Get document metadata
+- `GET /documents/room/{room_id}` - List documents for a room
+- `DELETE /documents/{id}` - Delete a document
+- `GET /health` - Health check endpoint
+
+### Document Processing Pipeline
+
+1. **PDF Parsing**: Extract text with bounding box coordinates using PyMuPDF
+2. **Segmentation**: Split into retrieval-optimized segments (500 chars max)
+3. **Embedding**: Generate semantic embeddings using Azure OpenAI `text-embedding-3-large`
+4. **Storage**: Persist to SQLite (development) or Redis (production)
+
+### Configuration for Documents
+
+Add to your `.env`:
+
+```bash
+# Document API Authentication (for frontend → agent communication)
+INTERNAL_SERVICE_TOKEN=your_secure_token_here
+
+# Frontend URL (for CORS)
+FRONTEND_URL=http://localhost:3000
+
+# Document API Port (optional, default 8000)
+DOCUMENT_API_PORT=8000
+```
+
 ## File Structure
 
 ```
 agent/
 ├── hedwiq_agent.py          # Main agent with transcription + insights
 ├── transcription_agent.py   # Transcription-only agent
+├── document_api.py          # HTTP API for document upload (NEW)
+├── document_processor.py    # PDF parsing + embeddings (NEW)
+├── persistent_store.py      # Document storage (SQLite/Redis) (NEW)
 ├── schemas/
 │   ├── __init__.py
-│   └── insights.py          # Insight data models
+│   ├── insights.py          # Insight data models
+│   └── documents.py         # Document data models (NEW)
 ├── prompts/
 │   ├── __init__.py
 │   └── insight_extraction.py # LLM prompts for insight extraction

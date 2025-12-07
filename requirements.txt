@@ -16,3 +16,29 @@ python-dotenv>=1.0.0
 
 # OpenAI SDK (for Azure OpenAI support)
 openai>=1.0.0
+
+# =============================================================================
+# Document Reference Feature Dependencies
+# =============================================================================
+
+# PDF processing with coordinate extraction
+PyMuPDF>=1.24.0
+
+# HTTP API server for document upload
+fastapi>=0.109.0
+uvicorn>=0.27.0
+python-multipart>=0.0.6  # Required for file uploads
+
+# Numerical operations for embeddings
+numpy>=1.26.0
+
+# BM25 lexical search (for Phase 2 hybrid retrieval)
+rank-bm25>=0.2.2
+
+# Redis client (optional - for production multi-instance deployments)
+# Uncomment if using Redis backend instead of SQLite
+# redis>=5.0.0
+
+# LiveKit Server API (for room access validation)
+# Required when ENFORCE_ROOM_ACCESS=true
+livekit-api>=0.7.0
