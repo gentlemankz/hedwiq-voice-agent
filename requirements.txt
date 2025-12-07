@@ -5,8 +5,8 @@ livekit-agents>=1.2.0,<2.0.0
 livekit-plugins-deepgram>=1.2.0,<2.0.0
 livekit-plugins-openai>=1.2.0,<2.0.0
 
-# Optional: VAD plugin for voice activity detection
-# livekit-plugins-silero>=1.2.0,<2.0.0
+# VAD plugin for voice activity detection (required for proper turn detection)
+livekit-plugins-silero>=1.2.0,<2.0.0
 
 # Data validation
 pydantic>=2.0.0

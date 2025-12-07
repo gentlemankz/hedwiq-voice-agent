@@ -35,6 +35,7 @@ from livekit import agents, rtc
 from livekit.agents import stt, JobContext, WorkerOptions, cli, AutoSubscribe, llm
 from livekit.plugins.deepgram import STT as DeepgramSTT
 from livekit.plugins.openai import LLM as OpenAILLM
+from livekit.plugins import silero
 
 from schemas.insights import Insight, InsightType
 from prompts.insight_extraction import (
@@ -455,7 +456,15 @@ class InsightAnalyzer:
 
 
 class ParticipantTranscriber:
-    """Handles transcription for a single participant's audio track."""
+    """Handles transcription for a single participant's audio track.
+
+    Includes transcript aggregation to combine consecutive speech segments
+    into complete utterances before publishing.
+    """
+
+    # Aggregation settings
+    AGGREGATION_DELAY = 2.0  # Seconds to wait before publishing aggregated transcript
+    MAX_AGGREGATION_TIME = 10.0  # Maximum time to aggregate before forcing publish
 
     def __init__(
         self,
@@ -473,6 +482,13 @@ class ParticipantTranscriber:
         self._task: asyncio.Task | None = None
         self._segment_counter = 0
 
+        # Transcript aggregation state
+        self._aggregation_buffer: List[str] = []
+        self._aggregation_segment_id: Optional[str] = None
+        self._aggregation_start_time: Optional[float] = None
+        self._aggregation_task: Optional[asyncio.Task] = None
+        self._aggregation_lock = asyncio.Lock()
+
     async def start(self):
         """Start transcribing this participant's audio."""
         self._task = asyncio.create_task(self._transcribe_track())
@@ -487,7 +503,13 @@ class ParticipantTranscriber:
                 pass
 
     async def _transcribe_track(self):
-        """Process audio from the track and publish transcriptions."""
+        """Process audio from the track and publish transcriptions.
+
+        Uses StreamAdapter with VAD for proper turn detection:
+        - START_OF_SPEECH: User started speaking
+        - END_OF_SPEECH: User stopped speaking (based on VAD silence detection)
+        - FINAL_TRANSCRIPT: Complete transcription of the speech segment
+        """
         try:
             audio_stream = rtc.AudioStream(self.track)
             stt_stream = self.stt.stream()
@@ -495,15 +517,37 @@ class ParticipantTranscriber:
             async def process_audio():
                 async for audio_event in audio_stream:
                     stt_stream.push_frame(audio_event.frame)
+                # Signal end of input when audio stream ends
+                stt_stream.end_input()
 
             async def process_transcriptions():
                 current_segment_id = None
                 async for event in stt_stream:
-                    if event.type == stt.SpeechEventType.FINAL_TRANSCRIPT:
+                    # Handle start of speech - create new segment
+                    if event.type == stt.SpeechEventType.START_OF_SPEECH:
+                        self._segment_counter += 1
+                        current_segment_id = (
+                            f"{self.participant.identity}-{self._segment_counter}"
+                        )
+                        logger.debug(
+                            f"Speech started for {self.participant.identity}, "
+                            f"segment: {current_segment_id}"
+                        )
+
+                    # Handle end of speech - segment boundary detected by VAD
+                    elif event.type == stt.SpeechEventType.END_OF_SPEECH:
+                        logger.debug(
+                            f"Speech ended for {self.participant.identity}, "
+                            f"segment: {current_segment_id}"
+                        )
+
+                    # Handle final transcript - complete utterance from STT
+                    elif event.type == stt.SpeechEventType.FINAL_TRANSCRIPT:
                         transcript_text = (
                             event.alternatives[0].text if event.alternatives else ""
                         )
                         if transcript_text.strip():
+                            # Ensure we have a segment ID
                             if current_segment_id is None:
                                 self._segment_counter += 1
                                 current_segment_id = (
@@ -533,9 +577,13 @@ class ParticipantTranscriber:
                             )
                             await self.insight_analyzer.add_transcript(entry)
 
+                            # Reset segment ID after final transcript
                             current_segment_id = None
 
+                    # Note: StreamAdapter doesn't emit INTERIM_TRANSCRIPT
+                    # because it waits for complete speech segments via VAD
                     elif event.type == stt.SpeechEventType.INTERIM_TRANSCRIPT:
+                        # This should not be called with StreamAdapter, but handle gracefully
                         transcript_text = (
                             event.alternatives[0].text if event.alternatives else ""
                         )
@@ -592,11 +640,28 @@ class HedwiqAgent:
         self.room = room
         self.transcribers: Dict[str, ParticipantTranscriber] = {}
 
-        # Initialize STT (Deepgram)
-        self.stt = DeepgramSTT(
-            model="nova-2",
-            language="en",
+        # Initialize VAD (Silero) for proper turn detection
+        # This prevents transcription fragmentation by detecting natural speech boundaries
+        # For meeting transcription, we use longer silence duration to capture complete thoughts
+        self.vad = silero.VAD.load(
+            min_speech_duration=0.1,    # Minimum 100ms to start detecting speech
+            min_silence_duration=1.2,   # Wait 1.2 seconds of silence before ending speech (meeting-optimized)
+            prefix_padding_duration=0.5, # Include 500ms of audio before speech starts
+            activation_threshold=0.45,  # Slightly more sensitive to catch soft speech
         )
+
+        # Initialize base STT (Deepgram)
+        base_stt = DeepgramSTT(
+            model="nova-3",  # Upgraded from nova-2 for better accuracy
+            language="en",
+            punctuate=True,
+            smart_format=True,
+        )
+
+        # Wrap STT with VAD using StreamAdapter
+        # This buffers audio until VAD detects end of speech, then sends complete
+        # segments to Deepgram - preventing word-by-word fragmentation
+        self.stt = stt.StreamAdapter(stt=base_stt, vad=self.vad)
 
         # Initialize LLM (Azure OpenAI)
         # Uses environment variables:
