@@ -13,11 +13,15 @@ from .documents import (
     DocumentSegment,
     UploadedDocument,
     DocumentReference,
+    RetrievalCandidate,
     MAX_DOCUMENTS_PER_ROOM,
     MAX_SEGMENTS_PER_DOCUMENT,
     MAX_SEGMENT_LENGTH,
     DOCUMENT_TTL_HOURS,
     DEDUPE_TTL_MINUTES,
+    MIN_SEGMENT_WORDS,
+    MIN_SEGMENT_DURATION,
+    RRF_K,
 )
 
 __all__ = [
@@ -33,9 +37,14 @@ __all__ = [
     "DocumentSegment",
     "UploadedDocument",
     "DocumentReference",
+    "RetrievalCandidate",
     "MAX_DOCUMENTS_PER_ROOM",
     "MAX_SEGMENTS_PER_DOCUMENT",
     "MAX_SEGMENT_LENGTH",
     "DOCUMENT_TTL_HOURS",
     "DEDUPE_TTL_MINUTES",
+    # Hybrid retrieval constants
+    "MIN_SEGMENT_WORDS",
+    "MIN_SEGMENT_DURATION",
+    "RRF_K",
 ]

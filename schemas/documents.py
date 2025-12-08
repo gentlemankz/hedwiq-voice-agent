@@ -213,6 +213,39 @@ MAX_SEGMENT_LENGTH = 500  # characters
 DOCUMENT_TTL_HOURS = 24
 DEDUPE_TTL_MINUTES = 5
 
+# Pre-filter thresholds for hybrid retrieval
+MIN_SEGMENT_WORDS = 6
+MIN_SEGMENT_DURATION = 1.2  # seconds
+RRF_K = 60  # Reciprocal Rank Fusion constant
+
+
+class RetrievalCandidate(BaseModel):
+    """
+    A candidate document segment returned by hybrid retrieval.
+
+    Contains the segment data along with retrieval scores for ranking.
+    Used as input to the LLM alignment step.
+    """
+    segment_id: str
+    document_id: str
+    page_number: int
+    section_title: Optional[str] = None
+    content: str
+    score: float = Field(..., ge=0.0, description="Combined RRF score")
+    bbox: Optional[BoundingBox] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for JSON serialization."""
+        return {
+            "segment_id": self.segment_id,
+            "document_id": self.document_id,
+            "page_number": self.page_number,
+            "section_title": self.section_title,
+            "content": self.content,
+            "score": self.score,
+            "bbox": self.bbox.to_dict() if self.bbox else None,
+        }
+
 
 # Document type icons for frontend display
 DOCUMENT_TYPE_ICONS = {

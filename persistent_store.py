@@ -37,7 +37,7 @@ import time
 import logging
 import os
 from pathlib import Path
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, TYPE_CHECKING
 from dataclasses import dataclass, asdict, field
 import threading
 
@@ -48,6 +48,9 @@ from schemas.documents import (
     MAX_SEGMENTS_PER_DOCUMENT,
     DOCUMENT_TTL_HOURS,
 )
+
+if TYPE_CHECKING:
+    from hybrid_retriever import RoomRetrieverManager
 
 logger = logging.getLogger("hedwiq-document-store")
 
@@ -519,14 +522,20 @@ class DocumentUploadService:
     """
     High-level service for document upload and processing.
 
-    Coordinates PDF processing, embedding generation, and storage.
+    Coordinates PDF processing, embedding generation, storage, and
+    retrieval index rebuilding.
+
+    Key integration point for Phase 2:
+    - After document upload, notifies RoomRetrieverManager to rebuild index
+    - Uses precomputed embeddings stored in PersistentDocumentStore
     """
 
     def __init__(
         self,
         store: Optional[PersistentDocumentStore] = None,
         embedding_model: str = "text-embedding-3-large",
-        summary_model: str = "gpt-4o-mini"
+        summary_model: str = "gpt-4o-mini",
+        retriever_manager: Optional["RoomRetrieverManager"] = None
     ):
         """
         Initialize upload service.
@@ -535,6 +544,7 @@ class DocumentUploadService:
             store: Document store (creates default SQLite store if None)
             embedding_model: Azure OpenAI embedding model name
             summary_model: Azure OpenAI chat model name for summaries
+            retriever_manager: Optional RoomRetrieverManager for index rebuilding
         """
         from document_processor import PDFProcessor, EmbeddingGenerator, DocumentSummarizer
 
@@ -542,6 +552,24 @@ class DocumentUploadService:
         self.pdf_processor = PDFProcessor()
         self.embedding_generator = EmbeddingGenerator(model_name=embedding_model)
         self.summarizer = DocumentSummarizer(model_name=summary_model)
+        self._retriever_manager = retriever_manager
+
+    def set_retriever_manager(self, manager: "RoomRetrieverManager"):
+        """
+        Set the retriever manager for index rebuilding.
+
+        Called after initialization if manager wasn't available at init time.
+        """
+        self._retriever_manager = manager
+
+    def _notify_index_rebuild(self, room_id: str):
+        """Notify retriever manager to rebuild index for room."""
+        if self._retriever_manager:
+            try:
+                self._retriever_manager.rebuild_room_index(room_id)
+                logger.info(f"Triggered retrieval index rebuild for room {room_id}")
+            except Exception as e:
+                logger.error(f"Failed to rebuild retrieval index for room {room_id}: {e}")
 
     async def upload_document(
         self,
@@ -629,6 +657,9 @@ class DocumentUploadService:
         except Exception as e:
             logger.error(f"Failed to store document: {e}")
             raise ValueError(f"Failed to store document: {e}")
+
+        # Rebuild retrieval index for this room
+        self._notify_index_rebuild(room_id)
 
         return {
             "documentId": stored_doc_id,
@@ -719,6 +750,9 @@ class DocumentUploadService:
         except Exception as e:
             logger.error(f"Failed to store document: {e}")
             raise ValueError(f"Failed to store document: {e}")
+
+        # Rebuild retrieval index for this room
+        self._notify_index_rebuild(room_id)
 
         return {
             "documentId": stored_doc_id,

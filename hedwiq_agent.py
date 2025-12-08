@@ -43,6 +43,11 @@ from prompts.insight_extraction import (
     INSIGHT_EXTRACTION_USER_TEMPLATE,
 )
 
+# Document reference imports (Phase 2)
+from document_referencer import DocumentReferencer
+from persistent_store import PersistentDocumentStore
+from hybrid_retriever import RoomRetrieverManager
+
 # Load environment variables
 load_dotenv(dotenv_path=Path(__file__).parent / ".env")
 
@@ -473,14 +478,19 @@ class ParticipantTranscriber:
         track: rtc.RemoteAudioTrack,
         stt_instance: stt.STT,
         insight_analyzer: InsightAnalyzer,
+        document_referencer: Optional[DocumentReferencer] = None,
     ):
         self.room = room
         self.participant = participant
         self.track = track
         self.stt = stt_instance
         self.insight_analyzer = insight_analyzer
+        self.document_referencer = document_referencer
         self._task: asyncio.Task | None = None
         self._segment_counter = 0
+
+        # Track segment start time for duration calculation
+        self._segment_start_time: Optional[float] = None
 
         # Transcript aggregation state
         self._aggregation_buffer: List[str] = []
@@ -529,6 +539,8 @@ class ParticipantTranscriber:
                         current_segment_id = (
                             f"{self.participant.identity}-{self._segment_counter}"
                         )
+                        # Track start time for duration calculation
+                        self._segment_start_time = time.time()
                         logger.debug(
                             f"Speech started for {self.participant.identity}, "
                             f"segment: {current_segment_id}"
@@ -554,6 +566,11 @@ class ParticipantTranscriber:
                                     f"{self.participant.identity}-{self._segment_counter}"
                                 )
 
+                            # Calculate segment duration
+                            duration_seconds = 2.0  # Default
+                            if self._segment_start_time:
+                                duration_seconds = time.time() - self._segment_start_time
+
                             logger.info(
                                 f"[{self.participant.name or self.participant.identity}] {transcript_text}"
                             )
@@ -577,8 +594,18 @@ class ParticipantTranscriber:
                             )
                             await self.insight_analyzer.add_transcript(entry)
 
-                            # Reset segment ID after final transcript
+                            # Send to document referencer for reference detection (Phase 2)
+                            if self.document_referencer:
+                                await self.document_referencer.on_transcript_final(
+                                    segment_id=current_segment_id,
+                                    transcript=transcript_text,
+                                    speaker_identity=self.participant.identity,
+                                    duration_seconds=duration_seconds,
+                                )
+
+                            # Reset segment state after final transcript
                             current_segment_id = None
+                            self._segment_start_time = None
 
                     # Note: StreamAdapter doesn't emit INTERIM_TRANSCRIPT
                     # because it waits for complete speech segments via VAD
@@ -630,14 +657,21 @@ class ParticipantTranscriber:
 
 class HedwiqAgent:
     """
-    Main Hedwiq agent that manages transcription and insight extraction.
+    Main Hedwiq agent that manages transcription, insight extraction,
+    and document reference detection.
 
-    This unified agent (Option A) handles both STT and LLM analysis in one process,
-    providing lower latency and simpler deployment.
+    This unified agent (Option A) handles STT, LLM analysis, and document
+    retrieval in one process, providing lower latency and simpler deployment.
+
+    Components:
+    - ParticipantTranscriber: Per-participant STT with VAD
+    - InsightAnalyzer: Queue-based LLM insight extraction
+    - DocumentReferencer: Real-time document reference detection (Phase 2)
     """
 
-    def __init__(self, room: rtc.Room):
+    def __init__(self, room: rtc.Room, room_id: Optional[str] = None):
         self.room = room
+        self.room_id = room_id or room.name
         self.transcribers: Dict[str, ParticipantTranscriber] = {}
 
         # Initialize VAD (Silero) for proper turn detection
@@ -682,6 +716,17 @@ class HedwiqAgent:
             llm=self.llm,
         )
 
+        # Initialize document reference detection (Phase 2)
+        # Uses persistent store and hybrid retrieval
+        self.document_store = PersistentDocumentStore(backend="sqlite")
+        self.retriever_manager = RoomRetrieverManager.get_instance(self.document_store)
+        self.document_referencer = DocumentReferencer(
+            room=room,
+            room_id=self.room_id,
+            document_store=self.document_store,
+            retriever_manager=self.retriever_manager,
+        )
+
     def _get_azure_deployment(self) -> str:
         """Get Azure OpenAI deployment name from environment."""
         import os
@@ -717,6 +762,9 @@ class HedwiqAgent:
         self.room.on("participant_connected", self._on_participant_connected)
         self.room.on("participant_disconnected", self._on_participant_disconnected)
 
+        # Start document referencer (Phase 2)
+        await self.document_referencer.start()
+
         logger.info(
             f"Found {len(self.room.remote_participants)} remote participants"
         )
@@ -740,7 +788,11 @@ class HedwiqAgent:
                     await self._start_transcriber(participant, track_pub.track)
 
     async def stop(self):
-        """Stop all transcribers."""
+        """Stop all transcribers and document referencer."""
+        # Stop document referencer
+        await self.document_referencer.stop()
+
+        # Stop all transcribers
         for transcriber in self.transcribers.values():
             await transcriber.stop()
         self.transcribers.clear()
@@ -820,6 +872,7 @@ class HedwiqAgent:
             track,
             self.stt,
             self.insight_analyzer,
+            self.document_referencer,  # Phase 2: Pass document referencer
         )
         self.transcribers[key] = transcriber
         await transcriber.start()
@@ -836,6 +889,8 @@ async def entrypoint(ctx: JobContext):
     4. Publishes transcriptions via LiveKit text streams (lk.transcription topic)
     5. Analyzes transcripts with Azure OpenAI for insights
     6. Publishes insights via text streams (hedwiq.insight topic)
+    7. (Phase 2) Detects document references using hybrid retrieval
+    8. Publishes retrieval candidates via hedwiq.document_candidate topic
     """
     logger.info(f"Hedwiq agent starting for room: {ctx.room.name}")
 

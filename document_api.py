@@ -35,6 +35,7 @@ from pydantic import BaseModel
 load_dotenv(dotenv_path=Path(__file__).parent / ".env")
 
 from persistent_store import PersistentDocumentStore, DocumentUploadService
+from hybrid_retriever import RoomRetrieverManager
 from schemas.documents import MAX_DOCUMENTS_PER_ROOM
 
 # Configure logging
@@ -63,7 +64,13 @@ app.add_middleware(
 
 # Initialize services
 document_store = PersistentDocumentStore(backend="sqlite")
-upload_service = DocumentUploadService(store=document_store)
+retriever_manager = RoomRetrieverManager.get_instance(document_store)
+upload_service = DocumentUploadService(
+    store=document_store,
+    retriever_manager=retriever_manager  # Wire up retriever for index rebuilding
+)
+
+logger.info("Document API services initialized with retriever manager")
 
 # Security constants
 INTERNAL_SERVICE_TOKEN = os.getenv("INTERNAL_SERVICE_TOKEN", "")
@@ -399,6 +406,8 @@ async def delete_document(
 ):
     """
     Delete a document.
+
+    Also triggers retrieval index rebuild for the room.
     """
     verify_internal_token(x_internal_token)
 
@@ -406,6 +415,9 @@ async def delete_document(
         raise HTTPException(status_code=404, detail="Document not found")
 
     document_store.remove_document(roomId, document_id)
+
+    # Rebuild retrieval index after deletion
+    retriever_manager.rebuild_room_index(roomId)
 
     return {"status": "deleted", "documentId": document_id}
 
