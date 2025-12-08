@@ -42,3 +42,7 @@ rank-bm25>=0.2.2
 # LiveKit Server API (for room access validation)
 # Required when ENFORCE_ROOM_ACCESS=true
 livekit-api>=0.7.0
+
+# Supabase client (for downloading documents from Supabase Storage)
+# Required for /documents/process endpoint
+supabase>=2.0.0

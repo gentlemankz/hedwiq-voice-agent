@@ -30,6 +30,15 @@ Audio → VAD/Deepgram STT → lk.transcription topic
                hedwiq.document_reference topic (confirmed references)
                       ↑
 Document API → PersistentDocumentStore → HybridRetriever (BM25 + Embeddings + RRF)
+      ↑
+Supabase Storage (downloads PDF from frontend uploads)
+```
+
+### Document Upload Flow
+```
+Frontend PreJoin → Supabase Storage → POST /documents/process → Agent processes
+                                              ↓
+                         Download PDF → Parse → Embed → Store in SQLite
 ```
 
 ## Key Files
@@ -39,9 +48,10 @@ Document API → PersistentDocumentStore → HybridRetriever (BM25 + Embeddings 
 | `hedwiq_agent.py` | Main agent: STT + LLM insights + document reference |
 | `hybrid_retriever.py` | BM25 + embedding search with RRF fusion (~20ms) |
 | `document_referencer.py` | Phase 3: Pre-filter + Retrieval + LLM alignment + Dedupe |
-| `document_api.py` | FastAPI for document upload |
+| `document_api.py` | FastAPI for document upload + Supabase processing |
 | `document_processor.py` | PDF parsing + embeddings |
 | `persistent_store.py` | SQLite/Redis document storage |
+| `supabase_client.py` | Supabase Storage client for downloading PDFs |
 | `prompts/document_reference.py` | LLM alignment prompt for reference validation |
 
 ## Configuration
@@ -51,6 +61,7 @@ Required in `.env`:
 - `DEEPGRAM_API_KEY`
 - `AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_DEPLOYMENT`
 - `INTERNAL_SERVICE_TOKEN` (for document API)
+- `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` (for Supabase Storage integration)
 
 ## Key Constants
 

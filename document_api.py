@@ -37,6 +37,11 @@ load_dotenv(dotenv_path=Path(__file__).parent / ".env")
 from persistent_store import PersistentDocumentStore, DocumentUploadService
 from hybrid_retriever import RoomRetrieverManager
 from schemas.documents import MAX_DOCUMENTS_PER_ROOM
+from supabase_client import (
+    download_document_from_supabase_sync,
+    check_supabase_configured,
+    STORAGE_BUCKET,
+)
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -188,6 +193,14 @@ class UploadResponse(BaseModel):
     status: str = "ready"
 
 
+class ProcessDocumentRequest(BaseModel):
+    """Request model for processing a document from Supabase Storage."""
+    documentId: str
+    roomId: str
+    storagePath: str
+    uploadedBy: Optional[str] = None
+
+
 class DocumentInfo(BaseModel):
     """Response model for document info."""
     id: str
@@ -283,6 +296,113 @@ async def upload_document(
 
     except ValueError as e:
         logger.error(f"Document processing failed: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+
+    except Exception as e:
+        logger.error(f"Document processing failed: {e}")
+        raise HTTPException(status_code=500, detail="Document processing failed")
+
+
+@app.post(
+    "/documents/process",
+    response_model=UploadResponse,
+    responses={
+        400: {"model": ErrorResponse, "description": "Bad request"},
+        403: {"model": ErrorResponse, "description": "Forbidden"},
+        500: {"model": ErrorResponse, "description": "Processing failed"},
+        503: {"model": ErrorResponse, "description": "Supabase not configured"},
+    }
+)
+async def process_document_from_supabase(
+    request: ProcessDocumentRequest,
+    x_internal_token: Optional[str] = Header(None),
+):
+    """
+    Process a document that was uploaded to Supabase Storage.
+
+    This endpoint is called by the frontend after uploading a PDF to Supabase.
+    It downloads the PDF from Supabase Storage and processes it for:
+    1. Text extraction with coordinates
+    2. Segmentation for retrieval
+    3. Embedding generation
+    4. Storage in the agent's document store
+
+    This enables the document reference feature to work with documents
+    uploaded via the frontend's pre-join upload flow.
+    """
+    # Verify internal token
+    verify_internal_token(x_internal_token)
+
+    # Check if Supabase is configured
+    if not check_supabase_configured():
+        logger.error("Supabase is not configured - cannot download document")
+        raise HTTPException(
+            status_code=503,
+            detail="Supabase storage is not configured on the agent. "
+                   "Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY environment variables."
+        )
+
+    # Validate room ID format
+    if not request.roomId or len(request.roomId) > 100:
+        raise HTTPException(status_code=400, detail="Invalid room ID")
+
+    # Check room document limit
+    existing_count = document_store.get_document_count(request.roomId)
+    if existing_count >= MAX_DOCUMENTS_PER_ROOM:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Maximum {MAX_DOCUMENTS_PER_ROOM} documents per room"
+        )
+
+    # Download PDF from Supabase
+    logger.info(f"Downloading document from Supabase: {request.storagePath}")
+    try:
+        pdf_data = download_document_from_supabase_sync(request.storagePath)
+    except ValueError as e:
+        logger.error(f"Supabase configuration error: {e}")
+        raise HTTPException(status_code=503, detail=str(e))
+    except Exception as e:
+        logger.error(f"Failed to download from Supabase: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to download document from storage: {e}"
+        )
+
+    if not pdf_data:
+        logger.error(f"Document not found in Supabase: {request.storagePath}")
+        raise HTTPException(
+            status_code=404,
+            detail="Document not found in storage"
+        )
+
+    # Validate PDF content (check magic bytes)
+    if not pdf_data[:5] == b"%PDF-":
+        raise HTTPException(status_code=400, detail="Invalid PDF file in storage")
+
+    # Extract filename from storage path
+    # Format: "meeting-documents/{roomId}/{documentId}.pdf" or "{roomId}/{documentId}.pdf"
+    path_parts = request.storagePath.split("/")
+    filename = path_parts[-1] if path_parts else f"{request.documentId}.pdf"
+
+    # Process document
+    logger.info(f"Processing document {request.documentId} for room {request.roomId}")
+    try:
+        result = upload_service.upload_document_sync(
+            room_id=request.roomId,
+            filename=filename,
+            pdf_data=pdf_data,
+            uploaded_by=request.uploadedBy or "unknown"
+        )
+
+        logger.info(
+            f"Document processed successfully: {result['documentId']} "
+            f"({result['pageCount']} pages, {result.get('segmentCount', 0)} segments)"
+        )
+
+        return UploadResponse(**result)
+
+    except ValueError as e:
+        logger.error(f"Document processing validation failed: {e}")
         raise HTTPException(status_code=400, detail=str(e))
 
     except Exception as e:
