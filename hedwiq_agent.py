@@ -43,7 +43,7 @@ from prompts.insight_extraction import (
     INSIGHT_EXTRACTION_USER_TEMPLATE,
 )
 
-# Document reference imports (Phase 2)
+# Document reference imports (Phase 3: retrieval + LLM alignment)
 from document_referencer import DocumentReferencer
 from persistent_store import PersistentDocumentStore
 from hybrid_retriever import RoomRetrieverManager
@@ -594,7 +594,7 @@ class ParticipantTranscriber:
                             )
                             await self.insight_analyzer.add_transcript(entry)
 
-                            # Send to document referencer for reference detection (Phase 2)
+                            # Send to document referencer for reference detection (Phase 3)
                             if self.document_referencer:
                                 await self.document_referencer.on_transcript_final(
                                     segment_id=current_segment_id,
@@ -666,7 +666,7 @@ class HedwiqAgent:
     Components:
     - ParticipantTranscriber: Per-participant STT with VAD
     - InsightAnalyzer: Queue-based LLM insight extraction
-    - DocumentReferencer: Real-time document reference detection (Phase 2)
+    - DocumentReferencer: Real-time document reference detection (Phase 3)
     """
 
     def __init__(self, room: rtc.Room, room_id: Optional[str] = None):
@@ -716,7 +716,7 @@ class HedwiqAgent:
             llm=self.llm,
         )
 
-        # Initialize document reference detection (Phase 2)
+        # Initialize document reference detection (Phase 3)
         # Uses persistent store and hybrid retrieval
         self.document_store = PersistentDocumentStore(backend="sqlite")
         self.retriever_manager = RoomRetrieverManager.get_instance(self.document_store)
@@ -762,7 +762,7 @@ class HedwiqAgent:
         self.room.on("participant_connected", self._on_participant_connected)
         self.room.on("participant_disconnected", self._on_participant_disconnected)
 
-        # Start document referencer (Phase 2)
+        # Start document referencer (Phase 3)
         await self.document_referencer.start()
 
         logger.info(
@@ -872,7 +872,7 @@ class HedwiqAgent:
             track,
             self.stt,
             self.insight_analyzer,
-            self.document_referencer,  # Phase 2: Pass document referencer
+            self.document_referencer,  # Phase 3: Pass document referencer
         )
         self.transcribers[key] = transcriber
         await transcriber.start()
@@ -889,8 +889,8 @@ async def entrypoint(ctx: JobContext):
     4. Publishes transcriptions via LiveKit text streams (lk.transcription topic)
     5. Analyzes transcripts with Azure OpenAI for insights
     6. Publishes insights via text streams (hedwiq.insight topic)
-    7. (Phase 2) Detects document references using hybrid retrieval
-    8. Publishes retrieval candidates via hedwiq.document_candidate topic
+    7. (Phase 3) Detects document references using hybrid retrieval + LLM alignment
+    8. Publishes confirmed references via hedwiq.document_reference topic
     """
     logger.info(f"Hedwiq agent starting for room: {ctx.room.name}")
 
