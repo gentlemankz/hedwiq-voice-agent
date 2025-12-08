@@ -846,9 +846,10 @@ class RetrievalMetrics:
             self._retrieval_with_candidates += 1
             self._candidate_scores.extend([c.score for c in candidates])
 
+        top_score = candidates[0].score if candidates else 0.0
         logger.debug(
             f"[{self.room_id}] Retrieval: {len(candidates)} candidates "
-            f"in {latency_ms:.1f}ms, top_score={candidates[0].score:.3f if candidates else 0}"
+            f"in {latency_ms:.1f}ms, top_score={top_score:.3f}"
         )
 
     def get_summary(self) -> Dict[str, any]:

@@ -318,10 +318,13 @@ class DocumentReferencer:
 
         # Step 1: Pre-filter (no LLM)
         prefilter_result = retriever.prefilter_segment(transcript, duration)
-        self._metrics.record_prefilter(
-            prefilter_result.should_process,
-            prefilter_result.reason
-        )
+        try:
+            self._metrics.record_prefilter(
+                prefilter_result.should_process,
+                prefilter_result.reason
+            )
+        except Exception as e:
+            logger.warning(f"Metrics recording failed (prefilter): {e}")
 
         if not prefilter_result.should_process:
             return
@@ -331,7 +334,10 @@ class DocumentReferencer:
         candidates = retriever.retrieve(transcript, top_k=3)
         retrieval_latency_ms = (time.time() - retrieval_start) * 1000
 
-        self._metrics.record_retrieval(retrieval_latency_ms, candidates)
+        try:
+            self._metrics.record_retrieval(retrieval_latency_ms, candidates)
+        except Exception as e:
+            logger.warning(f"Metrics recording failed (retrieval): {e}")
 
         if not candidates:
             return
