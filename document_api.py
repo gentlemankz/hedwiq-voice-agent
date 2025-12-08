@@ -384,14 +384,15 @@ async def process_document_from_supabase(
     path_parts = request.storagePath.split("/")
     filename = path_parts[-1] if path_parts else f"{request.documentId}.pdf"
 
-    # Process document
+    # Process document - use frontend's documentId to maintain consistency
     logger.info(f"Processing document {request.documentId} for room {request.roomId}")
     try:
         result = upload_service.upload_document_sync(
             room_id=request.roomId,
             filename=filename,
             pdf_data=pdf_data,
-            uploaded_by=request.uploadedBy or "unknown"
+            uploaded_by=request.uploadedBy or "unknown",
+            doc_id=request.documentId  # Use frontend's document ID for consistency
         )
 
         logger.info(

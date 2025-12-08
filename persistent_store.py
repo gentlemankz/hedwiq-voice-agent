@@ -576,7 +576,8 @@ class DocumentUploadService:
         room_id: str,
         filename: str,
         pdf_data: bytes,
-        uploaded_by: str
+        uploaded_by: str,
+        doc_id: Optional[str] = None
     ) -> dict:
         """
         Upload and process a document.
@@ -586,6 +587,7 @@ class DocumentUploadService:
             filename: Original filename
             pdf_data: PDF file content
             uploaded_by: User ID
+            doc_id: Optional document ID from frontend (use this to maintain ID consistency)
 
         Returns:
             dict with documentId, title, pageCount, status
@@ -595,11 +597,18 @@ class DocumentUploadService:
         """
         import asyncio
 
-        # Generate document ID first (validates room limits too)
-        try:
-            doc_id = self.store.generate_document_id(room_id)
-        except ValueError as e:
-            raise e
+        # Use provided doc_id or generate new one (validates room limits)
+        if doc_id is None:
+            try:
+                doc_id = self.store.generate_document_id(room_id)
+            except ValueError as e:
+                raise e
+        else:
+            # Still validate room limits when using provided ID
+            existing_count = len(self.store.get_documents_for_room(room_id))
+            if existing_count >= MAX_DOCUMENTS_PER_ROOM:
+                raise ValueError(f"Max {MAX_DOCUMENTS_PER_ROOM} documents per room")
+            logger.info(f"Using frontend-provided document ID: {doc_id}")
 
         # Parse PDF
         try:
@@ -674,7 +683,8 @@ class DocumentUploadService:
         room_id: str,
         filename: str,
         pdf_data: bytes,
-        uploaded_by: str
+        uploaded_by: str,
+        doc_id: Optional[str] = None
     ) -> dict:
         """
         Synchronous version of upload_document.
@@ -684,15 +694,23 @@ class DocumentUploadService:
             filename: Original filename
             pdf_data: PDF file content
             uploaded_by: User ID
+            doc_id: Optional document ID from frontend (use this to maintain ID consistency)
 
         Returns:
             dict with documentId, title, pageCount, status
         """
-        # Generate document ID first (validates room limits too)
-        try:
-            doc_id = self.store.generate_document_id(room_id)
-        except ValueError as e:
-            raise e
+        # Use provided doc_id or generate new one (validates room limits)
+        if doc_id is None:
+            try:
+                doc_id = self.store.generate_document_id(room_id)
+            except ValueError as e:
+                raise e
+        else:
+            # Still validate room limits when using provided ID
+            existing_count = len(self.store.get_documents_for_room(room_id))
+            if existing_count >= MAX_DOCUMENTS_PER_ROOM:
+                raise ValueError(f"Max {MAX_DOCUMENTS_PER_ROOM} documents per room")
+            logger.info(f"Using frontend-provided document ID: {doc_id}")
 
         # Parse PDF
         try:
