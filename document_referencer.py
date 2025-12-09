@@ -156,6 +156,7 @@ class DocumentReferencer:
 
         # State
         self._running = False
+        self._last_doc_snapshot: Optional[tuple[int, int]] = None  # (count, latest_created_at)
 
     def _get_llm_client(self):
         """Lazy load Azure OpenAI client for LLM alignment."""
@@ -199,6 +200,7 @@ class DocumentReferencer:
 
         # Build initial index for this room
         self._retriever_manager.rebuild_room_index(self.room_id)
+        self._last_doc_snapshot = self._get_doc_snapshot()
 
         # Start processing loop
         self._task = asyncio.create_task(self._process_queue())
@@ -246,7 +248,10 @@ class DocumentReferencer:
         if not self._running:
             return
 
-        # Check if we have any documents for this room
+        # Refresh index if new documents arrived while agent is running
+        await self._maybe_refresh_index()
+
+        # Check if we have any documents for this room (after potential refresh)
         if not self._retriever_manager.has_documents(self.room_id):
             return
 
@@ -271,6 +276,7 @@ class DocumentReferencer:
         Triggers index rebuild.
         """
         self._retriever_manager.rebuild_room_index(self.room_id)
+        self._last_doc_snapshot = self._get_doc_snapshot()
         logger.info(f"Rebuilt retrieval index for room {self.room_id} after document upload")
 
     async def on_document_removed(self):
@@ -280,6 +286,7 @@ class DocumentReferencer:
         Triggers index rebuild.
         """
         self._retriever_manager.rebuild_room_index(self.room_id)
+        self._last_doc_snapshot = self._get_doc_snapshot()
         logger.info(f"Rebuilt retrieval index for room {self.room_id} after document removal")
 
     async def _process_queue(self):
@@ -315,6 +322,9 @@ class DocumentReferencer:
         retriever = self._retriever_manager.get_retriever(self.room_id)
         if not retriever:
             return
+
+        # Refresh index lazily if uploads changed in another process
+        await self._maybe_refresh_index()
 
         # Step 1: Pre-filter (no LLM)
         prefilter_result = retriever.prefilter_segment(transcript, duration)
@@ -373,7 +383,8 @@ class DocumentReferencer:
             section_title=matching_candidate.section_title,
             matched_text=alignment_result.evidence_span or matching_candidate.content[:100],
             bbox=matching_candidate.bbox,
-            context=alignment_result.rationale or "Document reference detected",
+            # Keep context within schema limit (<=200 chars) to avoid validation errors
+            context=(alignment_result.rationale or "Document reference detected")[:200],
             confidence=alignment_result.confidence,
             transcript_ref=segment_id,
         )
@@ -575,6 +586,35 @@ class DocumentReferencer:
 
         except Exception as e:
             logger.error(f"Failed to publish reference: {e}")
+
+    def _get_doc_snapshot(self) -> Optional[tuple[int, int]]:
+        """
+        Return a lightweight snapshot (count, newest created_at) to detect changes.
+        """
+        try:
+            docs = self._store.get_documents_for_room(self.room_id)
+            if not docs:
+                return (0, 0)
+            latest = max(d.created_at for d in docs)
+            return (len(docs), latest)
+        except Exception as e:
+            logger.warning(f"Failed to compute document snapshot: {e}")
+            return None
+
+    async def _maybe_refresh_index(self):
+        """
+        Rebuild the retrieval index if the underlying document set changed.
+
+        Handles uploads performed in a separate process (document_api).
+        """
+        snapshot = self._get_doc_snapshot()
+        if snapshot is None:
+            return
+
+        if self._last_doc_snapshot is None or snapshot != self._last_doc_snapshot:
+            self._retriever_manager.rebuild_room_index(self.room_id)
+            self._last_doc_snapshot = snapshot
+            logger.info(f"Rebuilt retrieval index for room {self.room_id} (documents changed)")
 
     async def _publish_candidates(
         self,

@@ -101,5 +101,5 @@ MIN_ALIGNMENT_CONFIDENCE = 0.7  # Minimum confidence to publish a reference
 HIGH_CONFIDENCE_THRESHOLD = 0.85  # High confidence references (for potential highlighting)
 
 # Timeout settings for LLM alignment
-ALIGNMENT_TIMEOUT_SECONDS = 2.0  # Max time to wait for LLM response
-ALIGNMENT_MAX_RETRIES = 1  # Number of retries on timeout/error
+ALIGNMENT_TIMEOUT_SECONDS = 6.0  # Max time to wait for LLM response (longer to reduce drop-offs)
+ALIGNMENT_MAX_RETRIES = 2  # Number of retries on timeout/error

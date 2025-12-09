@@ -339,7 +339,10 @@ class HybridRetriever:
         # Check 3: Stop phrases (greetings, fillers)
         transcript_lower = transcript.lower().strip()
         for phrase in STOP_PHRASES:
-            if transcript_lower == phrase or transcript_lower.startswith(phrase + " "):
+            # Only skip if the whole segment is short filler/greeting
+            if len(words) <= 8 and (
+                transcript_lower == phrase or transcript_lower.startswith(phrase + " ")
+            ):
                 return SegmentPrefilterResult(
                     should_process=False,
                     reason=f"Stop phrase detected: '{phrase}'"

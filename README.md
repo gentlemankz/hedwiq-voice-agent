@@ -81,6 +81,9 @@ LIVEKIT_API_SECRET=your-api-secret
 
 # Deepgram API Key for Speech-to-Text
 DEEPGRAM_API_KEY=your_deepgram_api_key_here
+# Optional: STT tuning (defaults shown)
+STT_MODEL=nova-3
+STT_LANGUAGE=en  # set to 'multi' for multilingual meetings
 
 # Azure OpenAI Configuration for Insight Extraction
 # These env var names are auto-detected by the LiveKit OpenAI plugin

@@ -684,12 +684,13 @@ class HedwiqAgent:
             activation_threshold=0.45,  # Slightly more sensitive to catch soft speech
         )
 
-        # Initialize base STT (Deepgram)
+        # Initialize base STT (Deepgram) with configurable model/language
         base_stt = DeepgramSTT(
-            model="nova-3",  # Upgraded from nova-2 for better accuracy
-            language="en",
+            model=self._get_stt_model(),
+            language=self._get_stt_language(),
             punctuate=True,
             smart_format=True,
+            keyterms=self._get_stt_keyterms(),
         )
 
         # Wrap STT with VAD using StreamAdapter
@@ -752,6 +753,27 @@ class HedwiqAgent:
         """Get Azure OpenAI API version from environment."""
         import os
         return os.getenv("OPENAI_API_VERSION", "2024-10-01-preview")
+
+    def _get_stt_model(self) -> str:
+        """Get STT model name (Deepgram) from environment."""
+        import os
+        return os.getenv("STT_MODEL", "nova-3")
+
+    def _get_stt_language(self) -> str:
+        """Get STT language code; set to 'multi' for multilingual meetings."""
+        import os
+        return os.getenv("STT_LANGUAGE", "en-US")
+
+    def _get_stt_keyterms(self) -> Optional[list[str]]:
+        """
+        Get keyterms for Deepgram Nova-3 (improves proper noun accuracy).
+
+        Accepts comma-separated list in STT_KEYTERMS env var.
+        """
+        import os
+        raw = os.getenv("STT_KEYTERMS", "")
+        terms = [t.strip() for t in raw.split(",") if t.strip()]
+        return terms or None
 
     async def start(self):
         """Start the agent - listen for participants and their audio tracks."""
