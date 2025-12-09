@@ -79,3 +79,11 @@ dmypy.json
 
 # Local development
 *.local
+
+# Document storage (binary artifacts - do not commit)
+documents.db
+documents.db-journal
+documents.db-wal
+documents.db-shm
+document_storage/
+*.pdf

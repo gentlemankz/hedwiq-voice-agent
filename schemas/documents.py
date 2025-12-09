@@ -214,8 +214,9 @@ DOCUMENT_TTL_HOURS = 24
 DEDUPE_TTL_MINUTES = 5
 
 # Pre-filter thresholds for hybrid retrieval
-MIN_SEGMENT_WORDS = 6
-MIN_SEGMENT_DURATION = 1.2  # seconds
+# NOTE: Lowered from 6 to 4 words to capture short but meaningful references
+MIN_SEGMENT_WORDS = 4
+MIN_SEGMENT_DURATION = 1.0  # seconds (lowered from 1.2)
 RRF_K = 60  # Reciprocal Rank Fusion constant
 
 

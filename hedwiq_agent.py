@@ -35,7 +35,6 @@ from livekit import agents, rtc
 from livekit.agents import stt, JobContext, WorkerOptions, cli, AutoSubscribe, llm
 from livekit.plugins.deepgram import STT as DeepgramSTT
 from livekit.plugins.openai import LLM as OpenAILLM
-from livekit.plugins import silero
 
 from schemas.insights import Insight, InsightType
 from prompts.insight_extraction import (
@@ -674,28 +673,30 @@ class HedwiqAgent:
         self.room_id = room_id or room.name
         self.transcribers: Dict[str, ParticipantTranscriber] = {}
 
-        # Initialize VAD (Silero) for proper turn detection
-        # This prevents transcription fragmentation by detecting natural speech boundaries
-        # For meeting transcription, we use longer silence duration to capture complete thoughts
-        self.vad = silero.VAD.load(
-            min_speech_duration=0.1,    # Minimum 100ms to start detecting speech
-            min_silence_duration=1.2,   # Wait 1.2 seconds of silence before ending speech (meeting-optimized)
-            prefix_padding_duration=0.5, # Include 500ms of audio before speech starts
-            activation_threshold=0.45,  # Slightly more sensitive to catch soft speech
+        # Initialize STT (Deepgram STT with native WebSocket streaming)
+        # The STT.stream() method uses WebSocket connection (wss://api.deepgram.com/v1/listen)
+        # which avoids the BrokenPipeError from HTTP POST requests.
+        # Features:
+        # - Native WebSocket streaming with automatic KeepAlive (every 5 seconds)
+        # - Built-in reconnection handling
+        # - Nova-3 model support with keyterms
+        #
+        # NOTE: We use STT directly WITHOUT StreamAdapter wrapper.
+        # StreamAdapter uses HTTP batch requests which caused BrokenPipeError.
+        # STT.stream() uses WebSocket natively.
+        self.stt = DeepgramSTT(
+            model="nova-3",  # Best accuracy model, supports keyterms
+            language="en-US",
+            punctuate=True,  # Better for turn detection and readability
+            smart_format=True,  # Format numbers, dates, etc.
+            sample_rate=16000,
+            # Endpointing: milliseconds of silence to detect end of speech
+            # Higher values = wait longer for speaker to continue (better for meetings)
+            # 0 = disable, 25 = default, 500-1000 = good for meetings
+            endpointing_ms=800,
+            filler_words=True,  # Include "um", "uh" for natural transcription
+            interim_results=True,  # Get partial results while speaking
         )
-
-        # Initialize base STT (Deepgram)
-        base_stt = DeepgramSTT(
-            model="nova-3",  # Upgraded from nova-2 for better accuracy
-            language="en",
-            punctuate=True,
-            smart_format=True,
-        )
-
-        # Wrap STT with VAD using StreamAdapter
-        # This buffers audio until VAD detects end of speech, then sends complete
-        # segments to Deepgram - preventing word-by-word fragmentation
-        self.stt = stt.StreamAdapter(stt=base_stt, vad=self.vad)
 
         # Initialize LLM (Azure OpenAI)
         # Uses environment variables:

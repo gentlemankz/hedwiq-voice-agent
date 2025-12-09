@@ -19,7 +19,7 @@ uv venv && source .venv/bin/activate && uv pip install -r requirements.txt
 ## Architecture (Phase 3)
 
 ```
-Audio → VAD/Deepgram STT → lk.transcription topic
+Audio → Deepgram STTv2 (WebSocket) → lk.transcription topic
                       ↓
               InsightAnalyzer → hedwiq.insight topic
                       ↓
@@ -71,9 +71,37 @@ Required in `.env`:
 
 ### Document Reference (Phase 3)
 - `MAX_DOCUMENTS_PER_ROOM = 10` - Document limit
-- `MIN_SEGMENT_WORDS = 6` - Pre-filter threshold for retrieval
+- `MIN_SEGMENT_WORDS = 4` - Pre-filter threshold for retrieval (lowered from 6)
 - `RRF_K = 60` - Reciprocal Rank Fusion constant
 - `MIN_ALIGNMENT_CONFIDENCE = 0.7` - LLM alignment confidence threshold
-- `ALIGNMENT_TIMEOUT_SECONDS = 2.0` - LLM timeout
+- `ALIGNMENT_TIMEOUT_SECONDS = 4.0` - LLM timeout (increased from 2.0 for Azure latency)
+- `ALIGNMENT_MAX_RETRIES = 1` - Retry attempts (2 total attempts, 8s worst-case)
 - `MAX_CONCURRENT_ALIGNMENTS = 3` - Backpressure limit
 - `DEDUPE_TTL_MINUTES = 5` - Reference deduplication TTL
+- `STOP_PHRASE_MAX_WORDS = 12` - Only apply stop phrase filter for segments shorter than this
+
+## STT Configuration
+
+### Deepgram STT (WebSocket Streaming)
+The agent uses `STT` from `livekit.plugins.deepgram` with its native `.stream()` method:
+- **Native WebSocket streaming** via `wss://api.deepgram.com/v1/listen`
+- **Automatic KeepAlive messages** every 5 seconds
+- **Built-in reconnection handling**
+- **Nova-3 model** with keyterms support
+
+Current settings (optimized for meeting transcription):
+```python
+STT(
+    model="nova-3",           # Best accuracy model
+    language="en-US",
+    punctuate=True,           # Better for readability
+    smart_format=True,        # Format numbers, dates
+    endpointing_ms=800,       # Wait 800ms silence before end of speech
+    filler_words=True,        # Include "um", "uh"
+    interim_results=True,     # Get partial results
+)
+```
+
+**Note**: Previously used `StreamAdapter` wrapper which batches audio via HTTP POST,
+causing intermittent `BrokenPipeError`. Now using `STT.stream()` directly which uses
+native WebSocket streaming.

@@ -54,6 +54,8 @@ logger = logging.getLogger("hedwiq-hybrid-retriever")
 
 
 # Stop phrases for pre-filter (greetings, fillers, etc.)
+# NOTE: These are only applied to SHORT segments (< 12 words) to avoid
+# filtering out content-rich segments that happen to start with common words.
 STOP_PHRASES: Set[str] = {
     # Greetings
     "hello", "hi", "hey", "good morning", "good afternoon", "good evening",
@@ -61,9 +63,9 @@ STOP_PHRASES: Set[str] = {
     # Pleasantries
     "thanks", "thank you", "you're welcome", "no problem", "no worries",
     "please", "sorry", "excuse me", "pardon",
-    # Fillers
+    # Fillers (removed "so" - too common in substantive speech)
     "okay", "ok", "alright", "sure", "yeah", "yes", "no", "uh", "um",
-    "hmm", "huh", "well", "so", "anyway", "anyways", "like",
+    "hmm", "huh", "well", "anyway", "anyways", "like",
     # Thinking phrases
     "let me think", "i think", "you know", "i mean", "basically",
     "actually", "honestly", "to be honest", "in my opinion",
@@ -75,6 +77,9 @@ STOP_PHRASES: Set[str] = {
     "got it", "i see", "i understand", "makes sense", "right",
     "exactly", "correct", "absolutely", "definitely",
 }
+
+# Threshold for applying stop phrase filter (only for short segments)
+STOP_PHRASE_MAX_WORDS = 12
 
 # BM25 stopwords for tokenization
 BM25_STOPWORDS: Set[str] = {
@@ -309,8 +314,8 @@ class HybridRetriever:
         Lightweight pre-filter to skip irrelevant segments without LLM.
 
         This filter runs BEFORE retrieval to save compute on:
-        - Very short segments (< 6 words or < 1.2s)
-        - Greetings, fillers, pleasantries
+        - Very short segments (< MIN_SEGMENT_WORDS words or < MIN_SEGMENT_DURATION s)
+        - Greetings, fillers, pleasantries (only for short segments)
         - Repeated/similar content (chit-chat)
 
         Args:
@@ -323,10 +328,11 @@ class HybridRetriever:
         """
         # Check 1: Length (word count)
         words = transcript.split()
-        if len(words) < MIN_SEGMENT_WORDS:
+        word_count = len(words)
+        if word_count < MIN_SEGMENT_WORDS:
             return SegmentPrefilterResult(
                 should_process=False,
-                reason=f"Too short ({len(words)} words, min {MIN_SEGMENT_WORDS})"
+                reason=f"Too short ({word_count} words, min {MIN_SEGMENT_WORDS})"
             )
 
         # Check 2: Duration
@@ -336,14 +342,16 @@ class HybridRetriever:
                 reason=f"Too brief ({duration:.1f}s, min {MIN_SEGMENT_DURATION}s)"
             )
 
-        # Check 3: Stop phrases (greetings, fillers)
-        transcript_lower = transcript.lower().strip()
-        for phrase in STOP_PHRASES:
-            if transcript_lower == phrase or transcript_lower.startswith(phrase + " "):
-                return SegmentPrefilterResult(
-                    should_process=False,
-                    reason=f"Stop phrase detected: '{phrase}'"
-                )
+        # Check 3: Stop phrases (greetings, fillers) - ONLY for short segments
+        # Longer segments starting with common words like "so" may still have content
+        if word_count < STOP_PHRASE_MAX_WORDS:
+            transcript_lower = transcript.lower().strip()
+            for phrase in STOP_PHRASES:
+                if transcript_lower == phrase or transcript_lower.startswith(phrase + " "):
+                    return SegmentPrefilterResult(
+                        should_process=False,
+                        reason=f"Stop phrase detected: '{phrase}'"
+                    )
 
         # Check 4: High overlap with recent segments (dedupe chit-chat)
         if check_overlap and self._prev_segments:

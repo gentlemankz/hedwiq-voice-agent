@@ -314,6 +314,7 @@ class DocumentReferencer:
         # Get retriever for this room
         retriever = self._retriever_manager.get_retriever(self.room_id)
         if not retriever:
+            logger.debug(f"[{segment_id}] No retriever available for room {self.room_id}")
             return
 
         # Step 1: Pre-filter (no LLM)
@@ -327,6 +328,10 @@ class DocumentReferencer:
             logger.warning(f"Metrics recording failed (prefilter): {e}")
 
         if not prefilter_result.should_process:
+            logger.debug(
+                f"[{segment_id}] Pre-filter SKIP: {prefilter_result.reason} | "
+                f"transcript='{transcript[:50]}...'"
+            )
             return
 
         # Step 2: Hybrid retrieval
@@ -340,12 +345,27 @@ class DocumentReferencer:
             logger.warning(f"Metrics recording failed (retrieval): {e}")
 
         if not candidates:
+            logger.debug(
+                f"[{segment_id}] Retrieval: NO candidates | "
+                f"transcript='{transcript[:50]}...'"
+            )
             return
+
+        top_candidate = candidates[0]
+        logger.debug(
+            f"[{segment_id}] Retrieval: {len(candidates)} candidates, "
+            f"top_score={top_candidate.score:.4f}, doc={top_candidate.document_id}, "
+            f"page={top_candidate.page_number}"
+        )
 
         # Step 3: LLM alignment (Phase 3) with timeout and backpressure
         alignment_result = await self._align_with_llm(transcript, candidates)
 
         if not alignment_result or not alignment_result.found:
+            logger.debug(
+                f"[{segment_id}] Alignment: NO match found | "
+                f"top_candidate={top_candidate.segment_id}"
+            )
             # Optionally publish candidates for preview even if no confirmed match
             # await self._publish_candidates(segment_id, transcript, speaker, candidates)
             return
@@ -353,7 +373,8 @@ class DocumentReferencer:
         # Step 3b: Enforce confidence threshold (per plan: confidence >= 0.7)
         if alignment_result.confidence < MIN_ALIGNMENT_CONFIDENCE:
             logger.debug(
-                f"Low confidence reference skipped: {alignment_result.confidence:.2f} < {MIN_ALIGNMENT_CONFIDENCE}"
+                f"[{segment_id}] Alignment: LOW confidence {alignment_result.confidence:.2f} < {MIN_ALIGNMENT_CONFIDENCE} | "
+                f"section={alignment_result.section_id}"
             )
             self._alignment_metrics["low_confidence"] = self._alignment_metrics.get("low_confidence", 0) + 1
             return
@@ -395,10 +416,12 @@ class DocumentReferencer:
         Run single LLM alignment to validate reference.
 
         Features:
-        - Timeout handling (2 second default)
-        - Retry on transient failures
+        - Timeout handling (ALIGNMENT_TIMEOUT_SECONDS, default 4s)
+        - Retry on transient failures (ALIGNMENT_MAX_RETRIES, default 1)
         - Graceful degradation on errors
-        - Concurrency limiting via semaphore
+        - Concurrency limiting via semaphore (MAX_CONCURRENT_ALIGNMENTS=3)
+
+        Worst-case latency: 4s × 2 attempts = 8s per segment.
 
         Args:
             transcript: The speech transcript
