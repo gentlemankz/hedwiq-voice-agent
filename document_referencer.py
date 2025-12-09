@@ -157,6 +157,8 @@ class DocumentReferencer:
         # State
         self._running = False
         self._last_doc_snapshot: Optional[tuple[int, int]] = None  # (count, latest_created_at)
+        self._snapshot_check_interval = 30.0  # seconds between snapshot checks
+        self._last_snapshot_check = 0.0
 
     def _get_llm_client(self):
         """Lazy load Azure OpenAI client for LLM alignment."""
@@ -199,8 +201,8 @@ class DocumentReferencer:
         self._running = True
 
         # Build initial index for this room
-        self._retriever_manager.rebuild_room_index(self.room_id)
-        self._last_doc_snapshot = self._get_doc_snapshot()
+        await asyncio.to_thread(self._retriever_manager.rebuild_room_index, self.room_id)
+        self._last_doc_snapshot = await self._get_doc_snapshot()
 
         # Start processing loop
         self._task = asyncio.create_task(self._process_queue())
@@ -275,8 +277,9 @@ class DocumentReferencer:
 
         Triggers index rebuild.
         """
-        self._retriever_manager.rebuild_room_index(self.room_id)
-        self._last_doc_snapshot = self._get_doc_snapshot()
+        await asyncio.to_thread(self._retriever_manager.rebuild_room_index, self.room_id)
+        self._last_doc_snapshot = await self._get_doc_snapshot()
+        self._last_snapshot_check = time.time()
         logger.info(f"Rebuilt retrieval index for room {self.room_id} after document upload")
 
     async def on_document_removed(self):
@@ -285,8 +288,9 @@ class DocumentReferencer:
 
         Triggers index rebuild.
         """
-        self._retriever_manager.rebuild_room_index(self.room_id)
-        self._last_doc_snapshot = self._get_doc_snapshot()
+        await asyncio.to_thread(self._retriever_manager.rebuild_room_index, self.room_id)
+        self._last_doc_snapshot = await self._get_doc_snapshot()
+        self._last_snapshot_check = time.time()
         logger.info(f"Rebuilt retrieval index for room {self.room_id} after document removal")
 
     async def _process_queue(self):
@@ -341,7 +345,11 @@ class DocumentReferencer:
 
         # Step 2: Hybrid retrieval
         retrieval_start = time.time()
-        candidates = retriever.retrieve(transcript, top_k=3)
+        candidates = await asyncio.to_thread(
+            retriever.retrieve,
+            transcript,
+            3,
+        )
         retrieval_latency_ms = (time.time() - retrieval_start) * 1000
 
         try:
@@ -587,12 +595,14 @@ class DocumentReferencer:
         except Exception as e:
             logger.error(f"Failed to publish reference: {e}")
 
-    def _get_doc_snapshot(self) -> Optional[tuple[int, int]]:
+    async def _get_doc_snapshot(self) -> Optional[tuple[int, int]]:
         """
         Return a lightweight snapshot (count, newest created_at) to detect changes.
+
+        Runs store access off the event loop to avoid blocking async paths.
         """
         try:
-            docs = self._store.get_documents_for_room(self.room_id)
+            docs = await asyncio.to_thread(self._store.get_documents_for_room, self.room_id)
             if not docs:
                 return (0, 0)
             latest = max(d.created_at for d in docs)
@@ -607,12 +617,17 @@ class DocumentReferencer:
 
         Handles uploads performed in a separate process (document_api).
         """
-        snapshot = self._get_doc_snapshot()
+        now = time.time()
+        if now - self._last_snapshot_check < self._snapshot_check_interval:
+            return
+
+        self._last_snapshot_check = now
+        snapshot = await self._get_doc_snapshot()
         if snapshot is None:
             return
 
         if self._last_doc_snapshot is None or snapshot != self._last_doc_snapshot:
-            self._retriever_manager.rebuild_room_index(self.room_id)
+            await asyncio.to_thread(self._retriever_manager.rebuild_room_index, self.room_id)
             self._last_doc_snapshot = snapshot
             logger.info(f"Rebuilt retrieval index for room {self.room_id} (documents changed)")
 

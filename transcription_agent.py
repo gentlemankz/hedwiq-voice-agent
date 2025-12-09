@@ -11,7 +11,6 @@ This agent uses multi-track transcription to handle all participants simultaneou
 import asyncio
 import json
 import logging
-import os
 from pathlib import Path
 from typing import Dict
 
@@ -21,13 +20,7 @@ from livekit import agents, rtc
 from livekit.agents import stt, JobContext, WorkerOptions, cli, AutoSubscribe
 from livekit.plugins import deepgram
 
-
-def _get_stt_model() -> str:
-    return os.getenv("STT_MODEL", "nova-3")
-
-
-def _get_stt_language() -> str:
-    return os.getenv("STT_LANGUAGE", "en")
+from transcription_config import get_stt_language, get_stt_model
 
 # Load environment variables
 load_dotenv(dotenv_path=Path(__file__).parent / ".env")
@@ -152,8 +145,8 @@ class MultiParticipantTranscriber:
         self.room = room
         self.transcribers: Dict[str, ParticipantTranscriber] = {}
         self.stt = deepgram.STT(
-            model=_get_stt_model(),
-            language=_get_stt_language(),
+            model=get_stt_model(),
+            language=get_stt_language(),
         )
 
     async def start(self):

@@ -23,6 +23,7 @@ Environment Variables:
 
 import os
 import logging
+import asyncio
 from pathlib import Path
 from typing import Optional
 
@@ -34,7 +35,8 @@ from pydantic import BaseModel
 # Load environment variables
 load_dotenv(dotenv_path=Path(__file__).parent / ".env")
 
-from persistent_store import PersistentDocumentStore, DocumentUploadService
+from persistent_store import PersistentDocumentStore
+from document_upload_service import DocumentUploadService
 from hybrid_retriever import RoomRetrieverManager
 from schemas.documents import MAX_DOCUMENTS_PER_ROOM
 from supabase_client import (
@@ -91,9 +93,14 @@ ENFORCE_ROOM_ACCESS = os.getenv("ENFORCE_ROOM_ACCESS", "false").lower() == "true
 def verify_internal_token(x_internal_token: Optional[str] = Header(None)) -> bool:
     """Verify the internal service token."""
     if not INTERNAL_SERVICE_TOKEN:
-        # If no token configured, allow requests (development mode)
-        logger.warning("INTERNAL_SERVICE_TOKEN not set - running in development mode")
-        return True
+        # Fail closed if the service token is not configured
+        raise HTTPException(
+            status_code=503,
+            detail="INTERNAL_SERVICE_TOKEN is not configured on the agent",
+        )
+
+    if not x_internal_token:
+        raise HTTPException(status_code=403, detail="Missing internal token")
 
     if x_internal_token != INTERNAL_SERVICE_TOKEN:
         raise HTTPException(status_code=403, detail="Invalid internal token")
@@ -284,9 +291,9 @@ async def upload_document(
             detail=f"Maximum {MAX_DOCUMENTS_PER_ROOM} documents per room"
         )
 
-    # Process document
+    # Process document asynchronously to avoid blocking the event loop
     try:
-        result = upload_service.upload_document_sync(
+        result = await upload_service.upload_document(
             room_id=roomId,
             filename=file.filename or "document.pdf",
             pdf_data=pdf_data,
@@ -333,6 +340,11 @@ async def process_document_from_supabase(
     # Verify internal token
     verify_internal_token(x_internal_token)
 
+    # Verify user has access to upload to this room
+    if not request.uploadedBy:
+        raise HTTPException(status_code=400, detail="uploadedBy is required")
+    await verify_room_access(request.uploadedBy, request.roomId)
+
     # Check if Supabase is configured
     if not check_supabase_configured():
         logger.error("Supabase is not configured - cannot download document")
@@ -357,7 +369,10 @@ async def process_document_from_supabase(
     # Download PDF from Supabase
     logger.info(f"Downloading document from Supabase: {request.storagePath}")
     try:
-        pdf_data = download_document_from_supabase_sync(request.storagePath)
+        pdf_data = await asyncio.to_thread(
+            download_document_from_supabase_sync,
+            request.storagePath,
+        )
     except ValueError as e:
         logger.error(f"Supabase configuration error: {e}")
         raise HTTPException(status_code=503, detail=str(e))
@@ -387,7 +402,7 @@ async def process_document_from_supabase(
     # Process document - use frontend's documentId to maintain consistency
     logger.info(f"Processing document {request.documentId} for room {request.roomId}")
     try:
-        result = upload_service.upload_document_sync(
+        result = await upload_service.upload_document(
             room_id=request.roomId,
             filename=filename,
             pdf_data=pdf_data,

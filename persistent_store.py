@@ -55,6 +55,26 @@ if TYPE_CHECKING:
 logger = logging.getLogger("hedwiq-document-store")
 
 
+def _validate_doc_id(doc_id: str) -> str:
+    """
+    Validate/sanitize a document ID to prevent path traversal or overwrite.
+
+    Allows alphanumerics, dash, underscore, and dot. Rejects slashes and '..'.
+    """
+    import re
+
+    if not doc_id:
+        raise ValueError("Document ID cannot be empty")
+
+    if "/" in doc_id or "\\" in doc_id or ".." in doc_id:
+        raise ValueError("Invalid document ID")
+
+    if not re.match(r"^[A-Za-z0-9._-]+$", doc_id):
+        raise ValueError("Document ID contains invalid characters")
+
+    return doc_id
+
+
 @dataclass
 class StoredDocument:
     """Internal representation of a stored document."""
@@ -215,6 +235,9 @@ class PersistentDocumentStore:
             # Use provided doc_id or generate new one
             if doc_id is None:
                 doc_id = f"doc-{int(time.time())}-{len(existing)}"
+
+            # Sanitize/validate doc_id to prevent path traversal
+            doc_id = _validate_doc_id(doc_id)
 
             # Store PDF file if provided
             pdf_path = None
@@ -516,266 +539,3 @@ class PersistentDocumentStore:
             True if document exists
         """
         return self.get_document(room_id, doc_id) is not None
-
-
-class DocumentUploadService:
-    """
-    High-level service for document upload and processing.
-
-    Coordinates PDF processing, embedding generation, storage, and
-    retrieval index rebuilding.
-
-    Key integration point for Phase 2:
-    - After document upload, notifies RoomRetrieverManager to rebuild index
-    - Uses precomputed embeddings stored in PersistentDocumentStore
-    """
-
-    def __init__(
-        self,
-        store: Optional[PersistentDocumentStore] = None,
-        embedding_model: str = "text-embedding-3-large",
-        summary_model: str = "gpt-4o-mini",
-        retriever_manager: Optional["RoomRetrieverManager"] = None
-    ):
-        """
-        Initialize upload service.
-
-        Args:
-            store: Document store (creates default SQLite store if None)
-            embedding_model: Azure OpenAI embedding model name
-            summary_model: Azure OpenAI chat model name for summaries
-            retriever_manager: Optional RoomRetrieverManager for index rebuilding
-        """
-        from document_processor import PDFProcessor, EmbeddingGenerator, DocumentSummarizer
-
-        self.store = store or PersistentDocumentStore()
-        self.pdf_processor = PDFProcessor()
-        self.embedding_generator = EmbeddingGenerator(model_name=embedding_model)
-        self.summarizer = DocumentSummarizer(model_name=summary_model)
-        self._retriever_manager = retriever_manager
-
-    def set_retriever_manager(self, manager: "RoomRetrieverManager"):
-        """
-        Set the retriever manager for index rebuilding.
-
-        Called after initialization if manager wasn't available at init time.
-        """
-        self._retriever_manager = manager
-
-    def _notify_index_rebuild(self, room_id: str):
-        """Notify retriever manager to rebuild index for room."""
-        if self._retriever_manager:
-            try:
-                self._retriever_manager.rebuild_room_index(room_id)
-                logger.info(f"Triggered retrieval index rebuild for room {room_id}")
-            except Exception as e:
-                logger.error(f"Failed to rebuild retrieval index for room {room_id}: {e}")
-
-    async def upload_document(
-        self,
-        room_id: str,
-        filename: str,
-        pdf_data: bytes,
-        uploaded_by: str,
-        doc_id: Optional[str] = None
-    ) -> dict:
-        """
-        Upload and process a document.
-
-        Args:
-            room_id: LiveKit room ID
-            filename: Original filename
-            pdf_data: PDF file content
-            uploaded_by: User ID
-            doc_id: Optional document ID from frontend (use this to maintain ID consistency)
-
-        Returns:
-            dict with documentId, title, pageCount, status
-
-        Raises:
-            ValueError: If processing fails or limits exceeded
-        """
-        import asyncio
-
-        # Use provided doc_id or generate new one (validates room limits)
-        if doc_id is None:
-            try:
-                doc_id = self.store.generate_document_id(room_id)
-            except ValueError as e:
-                raise e
-        else:
-            # Still validate room limits when using provided ID
-            existing_count = len(self.store.get_documents_for_room(room_id))
-            if existing_count >= MAX_DOCUMENTS_PER_ROOM:
-                raise ValueError(f"Max {MAX_DOCUMENTS_PER_ROOM} documents per room")
-            logger.info(f"Using frontend-provided document ID: {doc_id}")
-
-        # Parse PDF
-        try:
-            pages = self.pdf_processor.parse_pdf_from_bytes(pdf_data, filename)
-        except Exception as e:
-            logger.error(f"Failed to parse PDF: {e}")
-            raise ValueError(f"Failed to parse PDF: {e}")
-
-        if not pages:
-            raise ValueError("PDF contains no readable content")
-
-        # Extract title
-        title = self.pdf_processor.extract_title(pages)
-
-        # Create segments with the REAL document ID
-        segments = self.pdf_processor.segment_document(pages, doc_id)
-
-        if not segments:
-            raise ValueError("Could not extract any segments from PDF")
-
-        # Convert segments to dicts
-        segment_dicts = [s.to_dict() for s in segments]
-
-        # Generate embeddings
-        try:
-            embeddings = self.embedding_generator.generate_embeddings(segments)
-        except Exception as e:
-            logger.error(f"Failed to generate embeddings: {e}")
-            raise ValueError(f"Failed to generate embeddings: {e}")
-
-        # Generate summary
-        full_text = " ".join(page.text for page in pages)
-        try:
-            summary = await self.summarizer.generate_summary(title, full_text)
-        except Exception as e:
-            logger.warning(f"Failed to generate summary: {e}")
-            summary = full_text[:500] + "..."
-
-        # Store document with pre-generated ID
-        try:
-            stored_doc_id = self.store.add_document(
-                room_id=room_id,
-                filename=filename,
-                title=title,
-                summary=summary,
-                page_count=len(pages),
-                segments=segment_dicts,
-                embeddings=embeddings,
-                uploaded_by=uploaded_by,
-                pdf_data=pdf_data,
-                doc_id=doc_id
-            )
-        except ValueError as e:
-            raise e
-        except Exception as e:
-            logger.error(f"Failed to store document: {e}")
-            raise ValueError(f"Failed to store document: {e}")
-
-        # Rebuild retrieval index for this room
-        self._notify_index_rebuild(room_id)
-
-        return {
-            "documentId": stored_doc_id,
-            "title": title,
-            "pageCount": len(pages),
-            "segmentCount": len(segments),
-            "status": "ready"
-        }
-
-    def upload_document_sync(
-        self,
-        room_id: str,
-        filename: str,
-        pdf_data: bytes,
-        uploaded_by: str,
-        doc_id: Optional[str] = None
-    ) -> dict:
-        """
-        Synchronous version of upload_document.
-
-        Args:
-            room_id: LiveKit room ID
-            filename: Original filename
-            pdf_data: PDF file content
-            uploaded_by: User ID
-            doc_id: Optional document ID from frontend (use this to maintain ID consistency)
-
-        Returns:
-            dict with documentId, title, pageCount, status
-        """
-        # Use provided doc_id or generate new one (validates room limits)
-        if doc_id is None:
-            try:
-                doc_id = self.store.generate_document_id(room_id)
-            except ValueError as e:
-                raise e
-        else:
-            # Still validate room limits when using provided ID
-            existing_count = len(self.store.get_documents_for_room(room_id))
-            if existing_count >= MAX_DOCUMENTS_PER_ROOM:
-                raise ValueError(f"Max {MAX_DOCUMENTS_PER_ROOM} documents per room")
-            logger.info(f"Using frontend-provided document ID: {doc_id}")
-
-        # Parse PDF
-        try:
-            pages = self.pdf_processor.parse_pdf_from_bytes(pdf_data, filename)
-        except Exception as e:
-            logger.error(f"Failed to parse PDF: {e}")
-            raise ValueError(f"Failed to parse PDF: {e}")
-
-        if not pages:
-            raise ValueError("PDF contains no readable content")
-
-        # Extract title
-        title = self.pdf_processor.extract_title(pages)
-
-        # Create segments with the REAL document ID
-        segments = self.pdf_processor.segment_document(pages, doc_id)
-
-        if not segments:
-            raise ValueError("Could not extract any segments from PDF")
-
-        # Convert segments to dicts
-        segment_dicts = [s.to_dict() for s in segments]
-
-        # Generate embeddings
-        try:
-            embeddings = self.embedding_generator.generate_embeddings(segments)
-        except Exception as e:
-            logger.error(f"Failed to generate embeddings: {e}")
-            raise ValueError(f"Failed to generate embeddings: {e}")
-
-        # Generate summary (sync)
-        full_text = " ".join(page.text for page in pages)
-        try:
-            summary = self.summarizer.generate_summary_sync(title, full_text)
-        except Exception as e:
-            logger.warning(f"Failed to generate summary: {e}")
-            summary = full_text[:500] + "..."
-
-        # Store document with pre-generated ID
-        try:
-            stored_doc_id = self.store.add_document(
-                room_id=room_id,
-                filename=filename,
-                title=title,
-                summary=summary,
-                page_count=len(pages),
-                segments=segment_dicts,
-                embeddings=embeddings,
-                uploaded_by=uploaded_by,
-                pdf_data=pdf_data,
-                doc_id=doc_id
-            )
-        except ValueError as e:
-            raise e
-        except Exception as e:
-            logger.error(f"Failed to store document: {e}")
-            raise ValueError(f"Failed to store document: {e}")
-
-        # Rebuild retrieval index for this room
-        self._notify_index_rebuild(room_id)
-
-        return {
-            "documentId": stored_doc_id,
-            "title": title,
-            "pageCount": len(pages),
-            "segmentCount": len(segments),
-            "status": "ready"
-        }
