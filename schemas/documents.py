@@ -49,13 +49,22 @@ class BoundingBox(BaseModel):
     """
     PDF coordinates for highlighting a region on a page.
 
-    Coordinates are in PDF units (points), where origin is bottom-left.
-    Frontend should convert to screen coordinates based on page dimensions.
+    Coordinates are in PDF units (points), with origin at TOP-LEFT.
+    This matches PyMuPDF's coordinate system (fitz library).
+
+    Coordinate System:
+    - Origin: top-left corner of the page
+    - X axis: increases left to right
+    - Y axis: increases top to bottom
+    - (x0, y0): top-left corner of the bounding box
+    - (x1, y1): bottom-right corner of the bounding box
+
+    Frontend uses percentage positioning for scale-independent rendering.
     """
-    x0: float = Field(..., description="Left edge X coordinate")
-    y0: float = Field(..., description="Bottom edge Y coordinate")
-    x1: float = Field(..., description="Right edge X coordinate")
-    y1: float = Field(..., description="Top edge Y coordinate")
+    x0: float = Field(..., description="Left edge X coordinate (from left of page)")
+    y0: float = Field(..., description="Top edge Y coordinate (from top of page)")
+    x1: float = Field(..., description="Right edge X coordinate (from left of page)")
+    y1: float = Field(..., description="Bottom edge Y coordinate (from top of page)")
 
     @field_validator("x1")
     @classmethod

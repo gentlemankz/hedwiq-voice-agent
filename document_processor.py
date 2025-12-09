@@ -250,36 +250,184 @@ class PDFProcessor:
         """
         Find bounding box that covers the chunk text.
 
-        Uses fuzzy matching to handle whitespace differences between
-        extracted text and original PDF spans.
+        Uses sequence matching to find CONTIGUOUS spans that correspond
+        to the chunk text, not just any spans with word overlap.
+
+        This ensures tight bounding boxes around the actual referenced text,
+        not the entire page.
         """
         if not text_spans:
             return None
 
-        chunk_lower = chunk.lower()
-        matching_spans = []
+        chunk_lower = chunk.lower().strip()
+        chunk_words = [w for w in chunk_lower.split() if len(w) > 2]
 
-        # Find spans that overlap with this chunk
-        for span in text_spans:
-            span_text_lower = span.text.lower()
-            # Check for any word overlap
-            if any(
-                word in chunk_lower
-                for word in span_text_lower.split()
-                if len(word) > 3
-            ):
-                matching_spans.append(span)
+        if not chunk_words:
+            return None
+
+        # Strategy 1: Find contiguous sequence of spans matching the chunk
+        best_match_spans = self._find_contiguous_match(chunk_lower, text_spans)
+
+        if best_match_spans:
+            # Compute tight bounding box around matching spans
+            x0 = min(s.bbox.x0 for s in best_match_spans)
+            y0 = min(s.bbox.y0 for s in best_match_spans)
+            x1 = max(s.bbox.x1 for s in best_match_spans)
+            y1 = max(s.bbox.y1 for s in best_match_spans)
+            return BoundingBox(x0=x0, y0=y0, x1=x1, y1=y1)
+
+        # Strategy 2: Find spans containing the first significant phrase (5+ words)
+        if len(chunk_words) >= 5:
+            phrase = " ".join(chunk_words[:5])
+            phrase_spans = self._find_phrase_spans(phrase, text_spans)
+            if phrase_spans:
+                x0 = min(s.bbox.x0 for s in phrase_spans)
+                y0 = min(s.bbox.y0 for s in phrase_spans)
+                x1 = max(s.bbox.x1 for s in phrase_spans)
+                y1 = max(s.bbox.y1 for s in phrase_spans)
+                return BoundingBox(x0=x0, y0=y0, x1=x1, y1=y1)
+
+        # Strategy 3: Fallback to spatially clustered matching spans
+        matching_spans = self._find_clustered_spans(chunk_words, text_spans)
 
         if not matching_spans:
             return None
 
-        # Compute union bounding box
         x0 = min(s.bbox.x0 for s in matching_spans)
         y0 = min(s.bbox.y0 for s in matching_spans)
         x1 = max(s.bbox.x1 for s in matching_spans)
         y1 = max(s.bbox.y1 for s in matching_spans)
 
         return BoundingBox(x0=x0, y0=y0, x1=x1, y1=y1)
+
+    def _find_contiguous_match(
+        self,
+        chunk_lower: str,
+        text_spans: List[TextSpan]
+    ) -> List[TextSpan]:
+        """
+        Find a contiguous sequence of spans that together match the chunk.
+        Returns the spans that form the best match.
+        """
+        if not text_spans:
+            return []
+
+        # Build concatenated text from spans with position tracking
+        span_positions = []  # List of (start_idx, end_idx, span)
+        full_text = ""
+
+        for span in text_spans:
+            start = len(full_text)
+            span_text = span.text
+            full_text += span_text + " "
+            end = len(full_text)
+            span_positions.append((start, end, span))
+
+        full_text_lower = full_text.lower()
+
+        # Try to find the chunk as a substring
+        # Use first 50 chars for matching to avoid issues with long chunks
+        search_text = chunk_lower[:100] if len(chunk_lower) > 100 else chunk_lower
+        match_start = full_text_lower.find(search_text)
+
+        if match_start == -1:
+            # Try with normalized whitespace
+            normalized_full = " ".join(full_text_lower.split())
+            normalized_chunk = " ".join(search_text.split())
+            match_start = normalized_full.find(normalized_chunk)
+            if match_start == -1:
+                return []
+
+        match_end = match_start + len(search_text)
+
+        # Find spans that overlap with the match
+        matching_spans = []
+        for start, end, span in span_positions:
+            if start < match_end and end > match_start:
+                matching_spans.append(span)
+
+        return matching_spans
+
+    def _find_phrase_spans(
+        self,
+        phrase: str,
+        text_spans: List[TextSpan]
+    ) -> List[TextSpan]:
+        """
+        Find spans containing a specific phrase (sequence of words).
+        """
+        phrase_words = phrase.lower().split()
+        if len(phrase_words) < 2:
+            return []
+
+        matching_spans = []
+
+        # Look for spans that contain consecutive words from the phrase
+        for i, span in enumerate(text_spans):
+            span_text = span.text.lower()
+
+            # Check if span contains any phrase words
+            words_found = sum(1 for word in phrase_words if word in span_text)
+
+            if words_found >= 2:
+                # Include this span and adjacent spans
+                matching_spans.append(span)
+
+                # Include next few spans if they continue the phrase
+                for j in range(i + 1, min(i + 5, len(text_spans))):
+                    next_span = text_spans[j]
+                    next_text = next_span.text.lower()
+                    if any(word in next_text for word in phrase_words):
+                        matching_spans.append(next_span)
+                    else:
+                        break
+                break
+
+        return matching_spans
+
+    def _find_clustered_spans(
+        self,
+        chunk_words: List[str],
+        text_spans: List[TextSpan],
+        max_vertical_gap: float = 30.0
+    ) -> List[TextSpan]:
+        """
+        Find spans matching chunk words that are spatially clustered.
+
+        Only includes spans that are vertically close to each other,
+        preventing the bbox from covering the entire page.
+        """
+        # Score each span by how many significant words it contains
+        scored_spans = []
+        for span in text_spans:
+            span_text_lower = span.text.lower()
+            # Count unique word matches
+            matches = sum(1 for word in chunk_words if word in span_text_lower and len(word) > 3)
+            if matches > 0:
+                scored_spans.append((matches, span))
+
+        if not scored_spans:
+            return []
+
+        # Sort by score (most matches first)
+        scored_spans.sort(key=lambda x: -x[0])
+
+        # Start with the highest-scoring span as anchor
+        anchor_span = scored_spans[0][1]
+        anchor_y = (anchor_span.bbox.y0 + anchor_span.bbox.y1) / 2
+
+        # Only include spans that are vertically close to the anchor
+        clustered_spans = [anchor_span]
+        for score, span in scored_spans[1:]:
+            span_y = (span.bbox.y0 + span.bbox.y1) / 2
+            if abs(span_y - anchor_y) <= max_vertical_gap:
+                clustered_spans.append(span)
+            # Also include if horizontally adjacent (same line)
+            elif abs(span.bbox.y0 - anchor_span.bbox.y0) < 5:
+                clustered_spans.append(span)
+
+        # Limit to reasonable number of spans to keep bbox tight
+        return clustered_spans[:10]
 
     def _split_paragraphs(self, text: str) -> List[str]:
         """Split text into paragraphs."""
