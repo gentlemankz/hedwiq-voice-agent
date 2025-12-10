@@ -34,6 +34,7 @@ from livekit.plugins import silero
 
 from insight_analyzer import InsightAnalyzer
 from participant_transcriber import ParticipantTranscriber
+from agenda_tracker import AgendaTracker
 
 # Document reference imports (Phase 3: retrieval + LLM alignment)
 from document_referencer import DocumentReferencer
@@ -75,6 +76,7 @@ class HedwiqAgent:
         document_store: Optional[PersistentDocumentStore] = None,
         retriever_manager: Optional[RoomRetrieverManager] = None,
         document_referencer: Optional[DocumentReferencer] = None,
+        agenda_tracker: Optional[AgendaTracker] = None,
     ):
         self.room = room
         self.room_id = room_id or room.name
@@ -136,6 +138,14 @@ class HedwiqAgent:
             retriever_manager=self.retriever_manager,
         )
 
+        # Initialize agenda tracker (Phase 4: Progressive Meeting Agenda)
+        # Receives agenda from frontend, tracks progress through LLM analysis
+        self.agenda_tracker = agenda_tracker or AgendaTracker(
+            room=room,
+            room_id=self.room_id,
+            llm=self.llm,
+        )
+
     def _get_azure_deployment(self) -> str:
         """Get Azure OpenAI deployment name from environment."""
         import os
@@ -174,6 +184,9 @@ class HedwiqAgent:
         # Start document referencer (Phase 3)
         await self.document_referencer.start()
 
+        # Start agenda tracker (Phase 4)
+        await self.agenda_tracker.start()
+
         logger.info(
             f"Found {len(self.room.remote_participants)} remote participants"
         )
@@ -197,9 +210,12 @@ class HedwiqAgent:
                     await self._start_transcriber(participant, track_pub.track)
 
     async def stop(self):
-        """Stop all transcribers and document referencer."""
+        """Stop all transcribers, document referencer, and agenda tracker."""
         # Stop document referencer
         await self.document_referencer.stop()
+
+        # Stop agenda tracker
+        await self.agenda_tracker.stop()
 
         # Stop all transcribers
         for transcriber in self.transcribers.values():
@@ -282,6 +298,7 @@ class HedwiqAgent:
             self.stt,
             self.insight_analyzer,
             self.document_referencer,  # Phase 3: Pass document referencer
+            self.agenda_tracker,  # Phase 4: Pass agenda tracker
             transcription_topic=TRANSCRIPTION_TOPIC,
         )
         self.transcribers[key] = transcriber
@@ -301,6 +318,9 @@ async def entrypoint(ctx: JobContext):
     6. Publishes insights via text streams (hedwiq.insight topic)
     7. (Phase 3) Detects document references using hybrid retrieval + LLM alignment
     8. Publishes confirmed references via hedwiq.document_reference topic
+    9. (Phase 4) Tracks meeting agenda progress using LLM analysis
+    10. Receives agenda from frontend via hedwiq.agenda topic
+    11. Publishes agenda progress updates via hedwiq.agenda_progress topic
     """
     logger.info(f"Hedwiq agent starting for room: {ctx.room.name}")
 

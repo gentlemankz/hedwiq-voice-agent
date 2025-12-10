@@ -2,7 +2,7 @@
 Hedwiq Agent Prompts
 
 This module contains LLM prompts for insight extraction, analysis,
-and document reference detection.
+document reference detection, and agenda tracking.
 """
 
 from .insight_extraction import (
@@ -20,6 +20,16 @@ from .document_reference import (
     ALIGNMENT_MAX_RETRIES,
 )
 
+from .agenda_tracking import (
+    AGENDA_TRACKING_SYSTEM_PROMPT,
+    AGENDA_TRACKING_USER_TEMPLATE,
+    AGENDA_START_DETECTION_PROMPT,
+    AGENDA_COMPLETION_CHECK_PROMPT,
+    format_agenda_items,
+    format_next_topic_info,
+    format_tracking_prompt,
+)
+
 __all__ = [
     # Insight extraction
     "INSIGHT_EXTRACTION_SYSTEM_PROMPT",
@@ -32,4 +42,12 @@ __all__ = [
     "HIGH_CONFIDENCE_THRESHOLD",
     "ALIGNMENT_TIMEOUT_SECONDS",
     "ALIGNMENT_MAX_RETRIES",
+    # Agenda tracking
+    "AGENDA_TRACKING_SYSTEM_PROMPT",
+    "AGENDA_TRACKING_USER_TEMPLATE",
+    "AGENDA_START_DETECTION_PROMPT",
+    "AGENDA_COMPLETION_CHECK_PROMPT",
+    "format_agenda_items",
+    "format_next_topic_info",
+    "format_tracking_prompt",
 ]

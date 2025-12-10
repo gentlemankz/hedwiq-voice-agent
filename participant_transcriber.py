@@ -1,18 +1,26 @@
 """
 Participant transcription worker extracted from hedwiq_agent.
 Keeps audio→text flow modular and reusable.
+
+Forwards transcripts to:
+- InsightAnalyzer: For AI insight extraction
+- DocumentReferencer: For document reference detection (Phase 3)
+- AgendaTracker: For agenda progress tracking (Phase 4)
 """
 
 import asyncio
 import logging
 import time
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 
 from livekit import rtc
 from livekit.agents import stt
 
 from insight_analyzer import TranscriptEntry, InsightAnalyzer
 from document_referencer import DocumentReferencer
+
+if TYPE_CHECKING:
+    from agenda_tracker import AgendaTracker
 
 logger = logging.getLogger("hedwiq-agent")
 
@@ -28,6 +36,7 @@ class ParticipantTranscriber:
         stt_instance: stt.STT,
         insight_analyzer: InsightAnalyzer,
         document_referencer: Optional[DocumentReferencer] = None,
+        agenda_tracker: Optional["AgendaTracker"] = None,
         transcription_topic: str = "lk.transcription",
     ):
         self.room = room
@@ -36,6 +45,7 @@ class ParticipantTranscriber:
         self.stt = stt_instance
         self.insight_analyzer = insight_analyzer
         self.document_referencer = document_referencer
+        self.agenda_tracker = agenda_tracker
         self.transcription_topic = transcription_topic
         self._task: Optional[asyncio.Task] = None
         self._segment_counter = 0
@@ -119,6 +129,10 @@ class ParticipantTranscriber:
                                     speaker_identity=self.participant.identity,
                                     duration_seconds=duration_seconds,
                                 )
+
+                            # Forward to agenda tracker (Phase 4)
+                            if self.agenda_tracker:
+                                await self.agenda_tracker.add_transcript(entry)
 
                             current_segment_id = None
                             self._segment_start_time = None

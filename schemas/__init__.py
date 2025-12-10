@@ -5,6 +5,24 @@ This module contains Pydantic models and enums for data validation and serializa
 """
 
 from .insights import Insight, InsightType, INSIGHT_ICONS
+from .agenda import (
+    AgendaItemStatus,
+    AgendaProgressType,
+    AgendaItem,
+    Agenda,
+    AgendaProgressUpdate,
+    TopicAnalysisResult,
+    MAX_AGENDA_ITEMS,
+    MIN_SEGMENTS_FOR_ANALYSIS,
+    MIN_ANALYSIS_INTERVAL_SECONDS,
+    ANALYSIS_DELAY_SECONDS,
+    MIN_CONFIDENCE_FOR_COMPLETION,
+    MIN_CONFIDENCE_FOR_SOFT_SIGNAL,
+    MAX_TRANSCRIPT_WINDOW,
+    MIN_SEGMENTS_SINCE_TOPIC_START,
+    TRANSITION_COOLDOWN_SECONDS,
+    AGENDA_STATUS_ICONS,
+)
 from .documents import (
     DocumentStatus,
     BoundingBox,
@@ -29,6 +47,23 @@ __all__ = [
     "Insight",
     "InsightType",
     "INSIGHT_ICONS",
+    # Agenda
+    "AgendaItemStatus",
+    "AgendaProgressType",
+    "AgendaItem",
+    "Agenda",
+    "AgendaProgressUpdate",
+    "TopicAnalysisResult",
+    "MAX_AGENDA_ITEMS",
+    "MIN_SEGMENTS_FOR_ANALYSIS",
+    "MIN_ANALYSIS_INTERVAL_SECONDS",
+    "ANALYSIS_DELAY_SECONDS",
+    "MIN_CONFIDENCE_FOR_COMPLETION",
+    "MIN_CONFIDENCE_FOR_SOFT_SIGNAL",
+    "MAX_TRANSCRIPT_WINDOW",
+    "MIN_SEGMENTS_SINCE_TOPIC_START",
+    "TRANSITION_COOLDOWN_SECONDS",
+    "AGENDA_STATUS_ICONS",
     # Documents
     "DocumentStatus",
     "BoundingBox",
