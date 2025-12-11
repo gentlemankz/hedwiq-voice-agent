@@ -110,14 +110,32 @@ class AgendaTracker:
         """Start listening for agenda from frontend via LiveKit text stream."""
         self._running = True
 
-        # Register handler for text messages on the agenda topic
-        self.room.on("data_received", self._on_data_received)
+        # Register text stream handler for agenda topic
+        # Frontend sends agenda via sendText() which requires register_text_stream_handler()
+        # NOT room.on("data_received") which is for data packets
+        try:
+            self.room.register_text_stream_handler(
+                AGENDA_TOPIC,
+                self._on_agenda_text_stream
+            )
+            logger.info(f"AgendaTracker registered text stream handler for topic '{AGENDA_TOPIC}'")
+        except ValueError as e:
+            # Handler already registered (e.g., reconnection scenario)
+            logger.warning(f"Text stream handler already registered: {e}")
 
         logger.info(f"AgendaTracker started for room {self.room_id}")
 
     async def stop(self):
         """Stop tracker and log final metrics."""
         self._running = False
+
+        # Unregister text stream handler
+        try:
+            self.room.unregister_text_stream_handler(AGENDA_TOPIC)
+            logger.debug(f"Unregistered text stream handler for topic '{AGENDA_TOPIC}'")
+        except Exception:
+            # Handler wasn't registered or already unregistered
+            pass
 
         if self._stream_task and not self._stream_task.done():
             self._stream_task.cancel()
@@ -140,22 +158,29 @@ class AgendaTracker:
             f"Transitions: {self.successful_transitions}"
         )
 
-    def _on_data_received(
-        self,
-        data_packet: rtc.DataPacket,
-    ):
-        """Handle incoming data packets from LiveKit."""
-        # Check if this is a text message on the agenda topic
+    def _on_agenda_text_stream(self, reader, participant_identity: str):
+        """
+        Handle incoming text stream for agenda topic.
+
+        This is the correct handler for LiveKit text streams sent via sendText().
+        The reader provides async access to the stream content.
+
+        Args:
+            reader: TextStreamReader with read_all() method
+            participant_identity: Identity of the participant who sent the stream
+        """
+        # Create async task to read and process the stream
+        asyncio.create_task(self._process_agenda_stream(reader, participant_identity))
+
+    async def _process_agenda_stream(self, reader, participant_identity: str):
+        """Process the agenda text stream asynchronously."""
         try:
-            # DataPacket has kind, data, topic, and participant fields
-            if not hasattr(data_packet, 'topic') or data_packet.topic != AGENDA_TOPIC:
-                return
-
-            payload = data_packet.data.decode('utf-8') if isinstance(data_packet.data, bytes) else data_packet.data
-            asyncio.create_task(self._handle_agenda_message(payload))
-
+            # Read the full content from the stream
+            payload = await reader.read_all()
+            logger.debug(f"Received agenda stream from {participant_identity}: {payload[:100]}...")
+            await self._handle_agenda_message(payload)
         except Exception as e:
-            logger.error(f"Error handling data packet: {e}")
+            logger.error(f"Error processing agenda text stream: {e}")
 
     async def _handle_agenda_message(self, payload: str):
         """Process incoming agenda message from frontend."""
