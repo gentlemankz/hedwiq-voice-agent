@@ -25,21 +25,21 @@ MAX_AGENDA_ITEMS = 10
 MAX_TITLE_LENGTH = 100
 MAX_DESCRIPTION_LENGTH = 500
 
-# Analysis triggers
-MIN_SEGMENTS_FOR_ANALYSIS = 4  # Wait for context before analyzing
-MIN_ANALYSIS_INTERVAL_SECONDS = 15.0  # Don't analyze too frequently
-ANALYSIS_DELAY_SECONDS = 5.0  # Wait for more context after trigger
+# Analysis triggers - tuned for responsive detection
+MIN_SEGMENTS_FOR_ANALYSIS = 2  # Reduced from 4 - analyze sooner
+MIN_ANALYSIS_INTERVAL_SECONDS = 8.0  # Reduced from 15 - more frequent checks
+ANALYSIS_DELAY_SECONDS = 2.0  # Reduced from 5 - faster response
 
 # Confidence thresholds
-MIN_CONFIDENCE_FOR_COMPLETION = 0.8  # Higher than insights (conservative)
-MIN_CONFIDENCE_FOR_SOFT_SIGNAL = 0.7
+MIN_CONFIDENCE_FOR_COMPLETION = 0.7  # Reduced from 0.8 - less conservative
+MIN_CONFIDENCE_FOR_SOFT_SIGNAL = 0.6  # Reduced from 0.7
 
 # Transcript window
 MAX_TRANSCRIPT_WINDOW = 20  # Last N segments for analysis
-MIN_SEGMENTS_SINCE_TOPIC_START = 5  # Don't complete too early
+MIN_SEGMENTS_SINCE_TOPIC_START = 2  # Reduced from 5 - allow earlier completion detection
 
 # Deduplication
-TRANSITION_COOLDOWN_SECONDS = 60.0  # Min time between transitions for same topic
+TRANSITION_COOLDOWN_SECONDS = 20.0  # Reduced from 60 - allow faster transitions
 
 
 class AgendaItemStatus(str, Enum):

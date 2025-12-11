@@ -263,6 +263,7 @@ class AgendaTracker:
 
         # Skip if no agenda loaded
         if not self.agenda:
+            logger.debug(f"[AgendaTracker] Skipping transcript - no agenda loaded")
             return
 
         async with self.schedule_lock:
@@ -274,6 +275,17 @@ class AgendaTracker:
             enough_segments = len(self.pending_segments) >= MIN_SEGMENTS_FOR_ANALYSIS
             enough_time = time_since_last >= MIN_ANALYSIS_INTERVAL_SECONDS
 
+            # Log current state for debugging
+            logger.debug(
+                f"[AgendaTracker] Transcript added - "
+                f"pending={len(self.pending_segments)}, "
+                f"segments_since_start={self.segments_since_topic_start}, "
+                f"current_item={self.current_item_index}, "
+                f"time_since_last={time_since_last:.1f}s, "
+                f"enough_segments={enough_segments}, "
+                f"enough_time={enough_time}"
+            )
+
             # Check if we should analyze
             should_analyze = (
                 enough_segments or
@@ -283,12 +295,27 @@ class AgendaTracker:
             # Also analyze if agenda hasn't started yet (to detect first topic)
             if self.current_item_index == -1 and len(self.pending_segments) >= 2:
                 should_analyze = True
+                logger.debug(f"[AgendaTracker] Will analyze for first topic detection")
 
-            if should_analyze and (self.scheduled_task is None or self.scheduled_task.done()):
-                self.scheduled_task = asyncio.create_task(self._delayed_analysis())
+            if should_analyze:
+                if self.scheduled_task is None or self.scheduled_task.done():
+                    logger.info(f"[AgendaTracker] Scheduling analysis - segments={len(self.pending_segments)}, segments_since_start={self.segments_since_topic_start}")
+                    self.scheduled_task = asyncio.create_task(self._delayed_analysis())
+                else:
+                    logger.debug(f"[AgendaTracker] Analysis already scheduled, skipping")
+            else:
+                reasons = []
+                if not enough_segments:
+                    reasons.append(f"need {MIN_SEGMENTS_FOR_ANALYSIS} pending segments (have {len(self.pending_segments)})")
+                if not enough_time:
+                    reasons.append(f"need {MIN_ANALYSIS_INTERVAL_SECONDS}s since last analysis (only {time_since_last:.1f}s)")
+                if self.segments_since_topic_start < MIN_SEGMENTS_SINCE_TOPIC_START:
+                    reasons.append(f"need {MIN_SEGMENTS_SINCE_TOPIC_START} segments since topic start (have {self.segments_since_topic_start})")
+                logger.debug(f"[AgendaTracker] Not analyzing yet: {', '.join(reasons)}")
 
     async def _delayed_analysis(self):
         """Wait briefly then run analysis for better context accumulation."""
+        logger.debug(f"[AgendaTracker] Waiting {ANALYSIS_DELAY_SECONDS}s before analysis...")
         await asyncio.sleep(ANALYSIS_DELAY_SECONDS)
         await self._run_analysis()
 
@@ -298,6 +325,7 @@ class AgendaTracker:
             # Move pending segments to main buffer
             async with self.schedule_lock:
                 if not self.pending_segments:
+                    logger.debug(f"[AgendaTracker] No pending segments to analyze")
                     return
                 segments_to_analyze = self.pending_segments.copy()
                 self.pending_segments.clear()
@@ -310,6 +338,12 @@ class AgendaTracker:
 
             self.last_analysis_time = time.time()
             self.total_analyses += 1
+
+            logger.info(
+                f"[AgendaTracker] Running analysis #{self.total_analyses} - "
+                f"buffer_size={len(self.transcript_buffer)}, "
+                f"current_item={self.current_item_index}"
+            )
 
             await self._analyze_topic_progression()
 
@@ -376,7 +410,15 @@ class AgendaTracker:
             # Parse response
             result = self._parse_analysis_result(response_text)
             if result:
+                logger.info(
+                    f"[AgendaTracker] LLM analysis result - "
+                    f"complete={result.current_topic_complete}, "
+                    f"confidence={result.confidence:.2f}, "
+                    f"evidence='{result.evidence[:50]}...'"
+                )
                 await self._handle_analysis_result(result)
+            else:
+                logger.warning(f"[AgendaTracker] Failed to parse LLM response: {response_text[:100]}...")
 
         except Exception as e:
             logger.error(f"Topic progression analysis failed: {e}")
@@ -441,25 +483,33 @@ class AgendaTracker:
     async def _handle_analysis_result(self, result: TopicAnalysisResult):
         """Handle the analysis result and publish progress updates if needed."""
         if not self.agenda:
+            logger.debug(f"[AgendaTracker] No agenda, skipping result handling")
             return
 
         # Check confidence threshold
         if result.confidence < MIN_CONFIDENCE_FOR_COMPLETION:
-            logger.debug(
-                f"Analysis confidence {result.confidence:.2f} below threshold "
-                f"{MIN_CONFIDENCE_FOR_COMPLETION}"
+            logger.info(
+                f"[AgendaTracker] Confidence {result.confidence:.2f} below threshold "
+                f"{MIN_CONFIDENCE_FOR_COMPLETION} - NOT completing topic"
             )
             return
 
         # Check cooldown to prevent rapid transitions
         now = time.time()
-        if now - self.last_transition_time < TRANSITION_COOLDOWN_SECONDS:
-            logger.debug("Transition cooldown active, skipping")
+        time_since_transition = now - self.last_transition_time
+        if time_since_transition < TRANSITION_COOLDOWN_SECONDS:
+            logger.info(
+                f"[AgendaTracker] Cooldown active - {time_since_transition:.1f}s since last transition, "
+                f"need {TRANSITION_COOLDOWN_SECONDS}s"
+            )
             return
 
         # Handle topic completion
         if result.current_topic_complete:
+            logger.info(f"[AgendaTracker] Topic {self.current_item_index} marked complete by LLM, transitioning...")
             await self._complete_current_topic(result)
+        else:
+            logger.debug(f"[AgendaTracker] LLM says topic not complete yet")
 
     async def _complete_current_topic(self, result: TopicAnalysisResult):
         """Mark current topic as completed and start next topic."""
