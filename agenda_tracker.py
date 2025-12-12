@@ -30,6 +30,7 @@ import logging
 import re
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any
 
 from livekit import rtc
@@ -58,11 +59,13 @@ from schemas.agenda import (
     ANALYSIS_DEBOUNCE_SECONDS,
     MAX_TRANSCRIPT_BUFFER,
     MIN_SEGMENT_WORDS_FOR_DETECTION,
+    extract_keywords,  # FIX (R1+R2): Consolidate keyword extraction
 )
 from prompts.agenda_detection import (
     format_topic_detection_prompt,
     format_meeting_start_prompt,
     format_meeting_end_prompt,
+    validate_llm_response,
     EXPLICIT_TRANSITION_PATTERNS,
     MEETING_START_PATTERNS,
     MEETING_END_PATTERNS,
@@ -71,6 +74,8 @@ from prompts.agenda_detection import (
     DETECTION_MAX_RETRIES,
     DETECTION_TEMPERATURE,
     DETECTION_MAX_TOKENS,
+    TOPIC_DETECTION_REQUIRED_FIELDS,
+    MEETING_START_REQUIRED_FIELDS,
 )
 from insight_analyzer import TranscriptEntry
 
@@ -183,9 +188,9 @@ class AgendaTracker:
             self.agenda = await self.db.get_agenda_for_room(self.room_id)
 
             if self.agenda:
-                # Extract keywords for each item
+                # Extract keywords for each item (FIX R1+R2: Use consolidated function)
                 for item in self.agenda.get("items", []):
-                    item["keywords"] = self._extract_keywords(
+                    item["keywords"] = extract_keywords(
                         item.get("title", ""),
                         item.get("description", "")
                     )
@@ -209,27 +214,6 @@ class AgendaTracker:
             logger.error(f"Failed to load agenda: {e}")
             self.agenda = None
 
-    def _extract_keywords(self, title: str, description: Optional[str]) -> List[str]:
-        """Extract keywords from title and description for matching."""
-        text = title.lower()
-        if description:
-            text += " " + description.lower()
-
-        stop_words = {
-            "the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for",
-            "of", "with", "by", "from", "is", "are", "was", "were", "be", "been",
-            "being", "have", "has", "had", "do", "does", "did", "will", "would",
-            "could", "should", "may", "might", "must", "shall", "can", "this",
-            "that", "these", "those", "it", "its", "we", "our", "us", "about"
-        }
-
-        words = text.split()
-        keywords = [
-            w.strip(".,;:!?()[]{}\"'")
-            for w in words
-            if len(w) > 2 and w.lower() not in stop_words
-        ]
-        return list(set(keywords))
 
     # =========================================================================
     # Transcript Processing
@@ -273,9 +257,14 @@ class AgendaTracker:
                 self.scheduled_task = asyncio.create_task(self._delayed_analysis())
 
     async def _delayed_analysis(self):
-        """Run analysis after debounce delay."""
-        await asyncio.sleep(ANALYSIS_DEBOUNCE_SECONDS)
-        await self._run_analysis()
+        """Run analysis after debounce delay with exception handling."""
+        try:
+            await asyncio.sleep(ANALYSIS_DEBOUNCE_SECONDS)
+            await self._run_analysis()
+        except asyncio.CancelledError:
+            raise  # Re-raise cancellation
+        except Exception as e:
+            logger.error(f"Delayed analysis failed: {e}")
 
     async def _run_analysis(self):
         """Run topic detection analysis on buffered transcripts."""
@@ -427,6 +416,11 @@ class AgendaTracker:
 
         # Publish meeting_ended event
         await self._publish_event(MeetingEndedEvent())
+
+        # FIX (R2): Update participant attributes for late joiner sync
+        await self._update_participant_attributes()
+
+        logger.info(f"Meeting ended for room {self.room_id}")
 
     # =========================================================================
     # Topic Transition Detection
@@ -692,9 +686,15 @@ class AgendaTracker:
         item_id = item.get("id")
         transcript_ref = self.transcript_buffer[-1].segment_id if self.transcript_buffer else None
 
-        # Update local state
+        # Capture start time for duration tracking (FIX: R2 found startedAt not set)
+        start_time = datetime.now(timezone.utc)
+        start_time_iso = start_time.isoformat()
+
+        # Update local state - including startedAt for duration calculation
         self.current_item_index = item_idx
         item["status"] = "in_progress"
+        item["startedAt"] = start_time_iso  # FIX: Now _complete_topic can calculate duration
+        item["startTranscriptRef"] = transcript_ref
 
         # Update database
         await self.db.update_item_status(item_id, "in_progress", transcript_ref)
@@ -732,24 +732,31 @@ class AgendaTracker:
         item_id = item.get("id")
         transcript_ref = self.transcript_buffer[-1].segment_id if self.transcript_buffer else None
 
-        # Calculate duration
+        # Calculate duration using proper timezone-aware comparison (FIX: R1 TZ issue)
         actual_duration = 0
+        now = datetime.now(timezone.utc)
         if item.get("startedAt"):
             try:
-                from datetime import datetime
                 start_str = item["startedAt"]
                 if start_str:
+                    # Parse ISO format, handle both 'Z' suffix and '+00:00'
                     start_time = datetime.fromisoformat(start_str.replace("Z", "+00:00"))
-                    actual_duration = int((datetime.utcnow() - start_time.replace(tzinfo=None)).total_seconds())
-            except Exception:
-                pass
+                    # Both are now timezone-aware, safe to subtract
+                    actual_duration = int((now - start_time).total_seconds())
+            except Exception as e:
+                logger.warning(f"Failed to calculate duration: {e}")
 
         # Update local state
         item["status"] = "completed"
         item["actualDuration"] = actual_duration
+        item["completedAt"] = now.isoformat()
+        item["endTranscriptRef"] = transcript_ref
 
-        # Update database
-        await self.db.update_item_status(item_id, "completed", transcript_ref)
+        # Update database (pass start_time to avoid redundant query - FIX: R1+R2)
+        await self.db.update_item_status(
+            item_id, "completed", transcript_ref,
+            started_at=item.get("startedAt")  # Pass to avoid extra query
+        )
 
         # Publish event
         event = TopicCompletedEvent(
@@ -765,6 +772,9 @@ class AgendaTracker:
         await self._update_participant_attributes()
 
         logger.info(f"Completed topic: {item.get('title')} (duration={actual_duration}s)")
+
+        # FIX (R2): Auto-end meeting when last topic completed
+        await self._check_all_topics_completed()
 
     async def _skip_topic(self, item_idx: int, reason: str):
         """Skip a topic and publish event."""
@@ -792,7 +802,37 @@ class AgendaTracker:
         )
         await self._publish_event(event)
 
+        # FIX (R2): Update participant attributes for late joiner sync
+        await self._update_participant_attributes()
+
         logger.info(f"Skipped topic: {item.get('title')} (reason={reason})")
+
+        # FIX (R3): Check if all topics done after skip (not just after complete)
+        await self._check_all_topics_completed()
+
+    async def _check_all_topics_completed(self):
+        """
+        Check if all topics are completed/skipped and auto-end meeting.
+
+        FIX (R2): Meeting was never ending after last topic completed
+        because _check_meeting_end required new transcripts.
+        """
+        if not self.agenda or self.is_meeting_ended:
+            return
+
+        items = self.agenda.get("items", [])
+        if not items:
+            return
+
+        # Check if all items are completed or skipped
+        all_done = all(
+            item.get("status") in ("completed", "skipped")
+            for item in items
+        )
+
+        if all_done:
+            logger.info("All agenda topics completed, auto-ending meeting")
+            await self._handle_meeting_end()
 
     # =========================================================================
     # LLM Detection
@@ -809,7 +849,10 @@ class AgendaTracker:
                 transcript_text
             )
 
-            result = await self._call_llm(system_prompt, user_prompt)
+            result = await self._call_llm(
+                system_prompt, user_prompt,
+                required_fields=MEETING_START_REQUIRED_FIELDS
+            )
             return result
 
         except Exception as e:
@@ -830,7 +873,10 @@ class AgendaTracker:
                 transcript_text
             )
 
-            result = await self._call_llm(system_prompt, user_prompt)
+            result = await self._call_llm(
+                system_prompt, user_prompt,
+                required_fields=TOPIC_DETECTION_REQUIRED_FIELDS
+            )
 
             if result:
                 return TopicDetectionResult(
@@ -850,9 +896,15 @@ class AgendaTracker:
     async def _call_llm(
         self,
         system_prompt: str,
-        user_prompt: str
+        user_prompt: str,
+        required_fields: Optional[List[str]] = None
     ) -> Optional[Dict[str, Any]]:
-        """Make LLM call with timeout and retry."""
+        """
+        Make LLM call with timeout, retry, and validation.
+
+        FIX (R2): Now passes temperature and max_tokens to LLM.
+        FIX (R2): Now validates response has required fields.
+        """
         from livekit.agents import llm as lk_llm
 
         for attempt in range(DETECTION_MAX_RETRIES + 1):
@@ -862,18 +914,35 @@ class AgendaTracker:
                 chat_ctx.add_message(role="user", content=user_prompt)
 
                 response_text = ""
+                was_truncated = False
 
                 async def get_response():
-                    nonlocal response_text
-                    stream = self.llm.chat(chat_ctx=chat_ctx)
+                    nonlocal response_text, was_truncated
+                    # FIX (R2): Pass temperature and max_tokens
+                    # FIX (R3): Server-side max_tokens is the primary limit;
+                    # client-side limit is safety net, not early termination
+                    stream = self.llm.chat(
+                        chat_ctx=chat_ctx,
+                        temperature=DETECTION_TEMPERATURE,
+                        max_tokens=DETECTION_MAX_TOKENS,
+                    )
                     async for chunk in stream:
                         if chunk.delta and chunk.delta.content:
                             response_text += chunk.delta.content
+                            # FIX (R3): Don't break stream - just flag if excessive
+                            # Server-side max_tokens should handle this
+                            if len(response_text) > DETECTION_MAX_TOKENS * 6 and not was_truncated:
+                                logger.warning("LLM response exceeding expected length")
+                                was_truncated = True
 
                 await asyncio.wait_for(
                     get_response(),
                     timeout=DETECTION_TIMEOUT_SECONDS
                 )
+
+                # FIX (R3): If response was excessively long, log but still try to parse
+                if was_truncated:
+                    logger.warning(f"LLM response was {len(response_text)} chars, attempting parse anyway")
 
                 # Parse JSON response
                 cleaned = response_text.strip()
@@ -885,7 +954,23 @@ class AgendaTracker:
                     cleaned = cleaned[:-3]
                 cleaned = cleaned.strip()
 
-                return json.loads(cleaned)
+                # FIX (R3): Try to extract JSON even if there's trailing content
+                # Look for complete JSON object
+                try:
+                    result = json.loads(cleaned)
+                except json.JSONDecodeError:
+                    # FIX (R3 follow-up): Use balanced brace matching instead of brittle regex
+                    # This handles nested objects, arrays, and braces in strings
+                    result = self._extract_json_object(cleaned)
+                    if result is None:
+                        raise json.JSONDecodeError("No valid JSON found", cleaned, 0)
+
+                # FIX (R2): Validate required fields
+                if required_fields and not validate_llm_response(result, required_fields):
+                    logger.warning(f"LLM response missing required fields: {required_fields}")
+                    return None
+
+                return result
 
             except asyncio.TimeoutError:
                 logger.warning(f"LLM timeout (attempt {attempt + 1})")
@@ -903,6 +988,63 @@ class AgendaTracker:
                     await asyncio.sleep(0.1)
                     continue
                 return None
+
+        return None
+
+    def _extract_json_object(self, text: str) -> Optional[Dict[str, Any]]:
+        """
+        Extract a JSON object from text using balanced brace matching.
+
+        FIX (R3 follow-up): Replaces brittle regex that couldn't handle
+        nested objects, arrays, or braces in strings.
+
+        Args:
+            text: Text potentially containing a JSON object
+
+        Returns:
+            Parsed JSON dict or None if no valid JSON found
+        """
+        # Find the first opening brace
+        start = text.find('{')
+        if start == -1:
+            return None
+
+        # Track brace depth, accounting for strings
+        depth = 0
+        in_string = False
+        escape_next = False
+
+        for i, char in enumerate(text[start:], start):
+            if escape_next:
+                escape_next = False
+                continue
+
+            if char == '\\' and in_string:
+                escape_next = True
+                continue
+
+            if char == '"' and not escape_next:
+                in_string = not in_string
+                continue
+
+            if in_string:
+                continue
+
+            if char == '{':
+                depth += 1
+            elif char == '}':
+                depth -= 1
+                if depth == 0:
+                    # Found complete object
+                    candidate = text[start:i + 1]
+                    try:
+                        return json.loads(candidate)
+                    except json.JSONDecodeError:
+                        # Continue searching for another valid object
+                        start = text.find('{', i + 1)
+                        if start == -1:
+                            return None
+                        depth = 0
 
         return None
 

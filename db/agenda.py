@@ -16,7 +16,7 @@ import asyncio
 import json
 import logging
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any
 
 logger = logging.getLogger("hedwiq-agenda-db")
@@ -259,22 +259,28 @@ class AgendaDB:
         self,
         item_id: str,
         status: str,
-        transcript_ref: Optional[str] = None
+        transcript_ref: Optional[str] = None,
+        started_at: Optional[str] = None
     ) -> bool:
         """
         Update an agenda item's status and timestamps.
+
+        FIX (R1+R2): Added started_at parameter to avoid extra query.
+        Duration is now calculated in SQL or passed from caller.
 
         Args:
             item_id: Agenda item ID
             status: New status (pending, in_progress, completed, skipped)
             transcript_ref: Optional transcript segment reference
+            started_at: Optional ISO timestamp when item started (for duration calc)
 
         Returns:
             True if update succeeded, False otherwise
         """
         await self._ensure_connected()
 
-        now = datetime.utcnow()
+        # FIX (R3): Use timezone-aware UTC consistently
+        now = datetime.now(timezone.utc)
 
         async with self._pool.acquire() as conn:
             # Build update query based on status
@@ -291,24 +297,36 @@ class AgendaDB:
                     status, now, transcript_ref, item_id
                 )
             elif status in ("completed", "skipped"):
-                # Calculate actual duration if we have a start time
-                item = await self.get_agenda_item(item_id)
-                actual_duration = None
-                if item and item.get("startedAt"):
+                # FIX (R1+R2): Calculate duration from passed started_at or in SQL
+                # This eliminates the extra get_agenda_item() query
+                # FIX (R3): Use timezone-aware comparison consistently
+                if started_at:
+                    # Duration passed from caller (preferred)
                     try:
                         start_time = datetime.fromisoformat(
-                            item["startedAt"].replace("Z", "+00:00")
+                            started_at.replace("Z", "+00:00")
                         )
-                        actual_duration = int((now - start_time.replace(tzinfo=None)).total_seconds())
+                        # Both now and start_time are timezone-aware
+                        actual_duration = int((now - start_time).total_seconds())
                     except Exception as e:
-                        logger.warning(f"Failed to calculate duration: {e}")
+                        logger.warning(f"Failed to calculate duration from passed started_at: {e}")
+                        actual_duration = None
+                else:
+                    actual_duration = None
 
+                # If duration couldn't be calculated from param, let SQL handle it
                 result = await conn.execute(
                     """
                     UPDATE agenda_item
                     SET status = $1,
                         completed_at = $2,
-                        actual_duration = COALESCE($3, actual_duration),
+                        actual_duration = COALESCE(
+                            $3,
+                            CASE WHEN started_at IS NOT NULL
+                                 THEN EXTRACT(EPOCH FROM ($2 - started_at))::integer
+                                 ELSE actual_duration
+                            END
+                        ),
                         end_transcript_ref = COALESCE($4, end_transcript_ref),
                         updated_at = $2
                     WHERE id = $5
@@ -357,7 +375,7 @@ class AgendaDB:
                 SET current_item_index = $1, updated_at = $2
                 WHERE id = $3
                 """,
-                current_item_index, datetime.utcnow(), agenda_id
+                current_item_index, datetime.now(timezone.utc), agenda_id
             )
 
             success = result == "UPDATE 1"
@@ -386,7 +404,7 @@ class AgendaDB:
                 SET meeting_started_at = $1, updated_at = $1
                 WHERE id = $2
                 """,
-                datetime.utcnow(), agenda_id
+                datetime.now(timezone.utc), agenda_id
             )
 
             success = result == "UPDATE 1"
@@ -408,7 +426,8 @@ class AgendaDB:
         """
         await self._ensure_connected()
 
-        now = datetime.utcnow()
+        # FIX (R3): Use timezone-aware UTC consistently
+        now = datetime.now(timezone.utc)
 
         async with self._pool.acquire() as conn:
             result = await conn.execute(

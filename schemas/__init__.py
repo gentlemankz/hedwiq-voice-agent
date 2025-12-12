@@ -49,8 +49,8 @@ from .agenda import (
     ANALYSIS_DEBOUNCE_SECONDS,
     MAX_TRANSCRIPT_BUFFER,
     MIN_SEGMENT_WORDS_FOR_DETECTION,
-    OFF_AGENDA_PERSIST_THRESHOLD,
-    OFF_AGENDA_HIGH_CONFIDENCE,
+    extract_keywords,  # FIX (R1+R2): Export consolidated function
+    # OFF_AGENDA constants removed - feature not implemented (R1+R2)
 )
 
 __all__ = [
@@ -102,6 +102,6 @@ __all__ = [
     "ANALYSIS_DEBOUNCE_SECONDS",
     "MAX_TRANSCRIPT_BUFFER",
     "MIN_SEGMENT_WORDS_FOR_DETECTION",
-    "OFF_AGENDA_PERSIST_THRESHOLD",
-    "OFF_AGENDA_HIGH_CONFIDENCE",
+    "extract_keywords",
+    # OFF_AGENDA constants removed - feature not implemented (R1+R2)
 ]

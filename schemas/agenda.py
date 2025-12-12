@@ -24,6 +24,44 @@ def get_timestamp_ms() -> int:
     return int(time.time() * 1000)
 
 
+# Stop words for keyword extraction - shared across all usages
+# FIX (R1+R2): Consolidate keyword extraction to single location
+STOP_WORDS = {
+    "the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for",
+    "of", "with", "by", "from", "is", "are", "was", "were", "be", "been",
+    "being", "have", "has", "had", "do", "does", "did", "will", "would",
+    "could", "should", "may", "might", "must", "shall", "can", "this",
+    "that", "these", "those", "it", "its", "we", "our", "us", "about"
+}
+
+
+def extract_keywords(title: str, description: Optional[str] = None) -> List[str]:
+    """
+    Extract keywords from title and description for matching.
+
+    FIX (R1+R2): Consolidate keyword extraction to single function.
+    This replaces duplicate implementations in AgendaTracker and AgendaItem.
+
+    Args:
+        title: Item title
+        description: Optional item description
+
+    Returns:
+        List of unique keywords (lowercase, stop words removed)
+    """
+    text = title.lower()
+    if description:
+        text += " " + description.lower()
+
+    words = text.split()
+    keywords = [
+        w.strip(".,;:!?()[]{}\"'")
+        for w in words
+        if len(w) > 2 and w.lower() not in STOP_WORDS
+    ]
+    return list(set(keywords))
+
+
 # ============================================================================
 # Status Types
 # ============================================================================
@@ -73,28 +111,13 @@ class AgendaItem(BaseModel):
         populate_by_name = True
         use_enum_values = True
 
-    def extract_keywords(self) -> List[str]:
-        """Extract keywords from title and description for matching."""
-        text = self.title.lower()
-        if self.description:
-            text += " " + self.description.lower()
+    def get_keywords(self) -> List[str]:
+        """
+        Extract keywords from title and description for matching.
 
-        # Remove common stop words and short words
-        stop_words = {
-            "the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for",
-            "of", "with", "by", "from", "is", "are", "was", "were", "be", "been",
-            "being", "have", "has", "had", "do", "does", "did", "will", "would",
-            "could", "should", "may", "might", "must", "shall", "can", "this",
-            "that", "these", "those", "it", "its", "we", "our", "us", "about"
-        }
-
-        words = text.split()
-        keywords = [
-            w.strip(".,;:!?()[]{}\"'")
-            for w in words
-            if len(w) > 2 and w.lower() not in stop_words
-        ]
-        return list(set(keywords))
+        FIX (R1+R2): Now uses shared extract_keywords() function.
+        """
+        return extract_keywords(self.title, self.description)
 
 
 class Agenda(BaseModel):
@@ -317,6 +340,8 @@ MAX_TRANSCRIPT_BUFFER = 20        # Maximum transcript entries to buffer
 # Pre-filter thresholds
 MIN_SEGMENT_WORDS_FOR_DETECTION = 6  # Minimum words to consider for topic detection
 
-# Off-agenda detection
-OFF_AGENDA_PERSIST_THRESHOLD = 120.0  # 2 minutes of off-agenda before flagging
-OFF_AGENDA_HIGH_CONFIDENCE = 0.85     # High confidence needed to mark off-agenda
+# NOTE: Off-agenda detection constants removed (R1+R2)
+# Feature was defined in plan but not implemented in Phase 4.
+# If implementing in future, add:
+# OFF_AGENDA_PERSIST_THRESHOLD = 120.0  # 2 minutes of off-agenda before flagging
+# OFF_AGENDA_HIGH_CONFIDENCE = 0.85     # High confidence needed to mark off-agenda

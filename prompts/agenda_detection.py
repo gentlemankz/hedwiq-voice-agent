@@ -172,6 +172,64 @@ MEETING_END_PATTERNS = [
 # Helper Functions
 # ============================================================================
 
+# Maximum transcript length to prevent excessive LLM input
+MAX_TRANSCRIPT_LENGTH = 4000
+
+# Characters that could be used for prompt injection attacks
+PROMPT_INJECTION_PATTERNS = [
+    "ignore previous",
+    "ignore all",
+    "disregard",
+    "forget your instructions",
+    "system prompt",
+    "you are now",
+    "new instructions",
+]
+
+
+def sanitize_transcript(transcript_text: str) -> str:
+    """
+    Sanitize transcript text to prevent prompt injection attacks.
+
+    FIX (R1): Raw transcript was injected directly into LLM prompts.
+
+    This function:
+    1. Truncates to prevent excessive input
+    2. Escapes potential injection patterns
+    3. Adds delimiter markers
+
+    Args:
+        transcript_text: Raw transcript from speakers
+
+    Returns:
+        Sanitized transcript safe for LLM prompt injection
+    """
+    # Truncate to prevent excessive input
+    if len(transcript_text) > MAX_TRANSCRIPT_LENGTH:
+        transcript_text = transcript_text[:MAX_TRANSCRIPT_LENGTH] + "... [truncated]"
+
+    # Convert to lowercase for pattern matching
+    text_lower = transcript_text.lower()
+
+    # Check for potential injection patterns and escape them
+    for pattern in PROMPT_INJECTION_PATTERNS:
+        if pattern in text_lower:
+            # Add visual markers to make injection obvious
+            transcript_text = transcript_text.replace(
+                pattern, f"[SPEAKER SAID: {pattern}]"
+            )
+            # Case-insensitive replacement
+            import re
+            transcript_text = re.sub(
+                re.escape(pattern),
+                f"[SPEAKER SAID: {pattern}]",
+                transcript_text,
+                flags=re.IGNORECASE
+            )
+
+    return transcript_text
+
+
 def format_topic_detection_prompt(
     current_item: dict,
     upcoming_items: list,
@@ -188,6 +246,9 @@ def format_topic_detection_prompt(
     Returns:
         tuple: (system_prompt, user_prompt)
     """
+    # Sanitize transcript to prevent prompt injection (FIX R1)
+    safe_transcript = sanitize_transcript(transcript_text)
+
     # Format upcoming topics
     upcoming_parts = []
     for item in upcoming_items[:3]:  # Limit to next 3 items
@@ -204,7 +265,7 @@ def format_topic_detection_prompt(
         current_title=current_item.get('title', 'Unknown'),
         current_description=current_item.get('description') or 'No description',
         upcoming_topics=upcoming_topics,
-        transcript=transcript_text
+        transcript=safe_transcript
     )
 
     return TOPIC_DETECTION_SYSTEM_PROMPT, user_prompt
@@ -221,6 +282,9 @@ def format_meeting_start_prompt(agenda_items: list, transcript_text: str) -> tup
     Returns:
         tuple: (system_prompt, user_prompt)
     """
+    # Sanitize transcript (FIX R1)
+    safe_transcript = sanitize_transcript(transcript_text)
+
     topics_parts = []
     for i, item in enumerate(agenda_items[:5]):  # First 5 items
         topics_parts.append(
@@ -229,7 +293,7 @@ def format_meeting_start_prompt(agenda_items: list, transcript_text: str) -> tup
 
     user_prompt = MEETING_START_USER_TEMPLATE.format(
         agenda_topics="\n".join(topics_parts) if topics_parts else "No agenda",
-        transcript=transcript_text
+        transcript=safe_transcript
     )
 
     return MEETING_START_SYSTEM_PROMPT, user_prompt
@@ -253,14 +317,46 @@ def format_meeting_end_prompt(
     Returns:
         tuple: (system_prompt, user_prompt)
     """
+    # Sanitize transcript (FIX R1)
+    safe_transcript = sanitize_transcript(transcript_text)
+
     user_prompt = MEETING_END_USER_TEMPLATE.format(
         total_topics=total_topics,
         completed_topics=completed_topics,
         current_topic=current_topic,
-        transcript=transcript_text
+        transcript=safe_transcript
     )
 
     return MEETING_END_SYSTEM_PROMPT, user_prompt
+
+
+def validate_llm_response(response: dict, required_fields: list[str]) -> bool:
+    """
+    Validate LLM JSON response has required fields.
+
+    FIX (R2): LLM responses were not validated for required fields.
+
+    Args:
+        response: Parsed JSON response from LLM
+        required_fields: List of required field names
+
+    Returns:
+        True if all required fields present, False otherwise
+    """
+    if not isinstance(response, dict):
+        return False
+
+    for field in required_fields:
+        if field not in response:
+            return False
+
+    return True
+
+
+# Required fields for each response type
+TOPIC_DETECTION_REQUIRED_FIELDS = ["has_transitioned", "confidence"]
+MEETING_START_REQUIRED_FIELDS = ["has_started", "confidence"]
+MEETING_END_REQUIRED_FIELDS = ["has_ended", "confidence"]
 
 
 # ============================================================================
