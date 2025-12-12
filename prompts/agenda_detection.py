@@ -360,68 +360,105 @@ MIN_DETECTION_CONFIDENCE = 0.7     # Minimum confidence to act on detection
 HIGH_CONFIDENCE_THRESHOLD = 0.85   # High confidence threshold
 
 # LLM settings
-DETECTION_TIMEOUT_SECONDS = 3.0    # Max time to wait for LLM response
+DETECTION_TIMEOUT_SECONDS = 5.0    # Max time to wait for LLM response (increased for better analysis)
 DETECTION_MAX_RETRIES = 1          # Retries on timeout/error
-DETECTION_TEMPERATURE = 0.0        # Use deterministic output
-DETECTION_MAX_TOKENS = 200         # Max response tokens
+DETECTION_TEMPERATURE = 0.1        # Slight temperature for more natural reasoning
+DETECTION_MAX_TOKENS = 350         # Max response tokens (increased for detailed response)
 
 
 # ============================================================================
-# Unified Topic Detection (Pure LLM Context Analysis)
+# Unified Topic Detection (Pure LLM Context Analysis) - REVISED
 # ============================================================================
 
-UNIFIED_TOPIC_DETECTION_SYSTEM_PROMPT = """You are analyzing a meeting transcript to determine which agenda topic is currently being discussed.
+UNIFIED_TOPIC_DETECTION_SYSTEM_PROMPT = """You are a meeting analyst detecting topic transitions in real-time.
 
-Your task:
-1. Read the meeting transcript
-2. Compare the discussion content to ALL agenda topics
-3. Determine which topic best matches what is being discussed
-4. Assess if the discussion has moved from the current topic to a different one
+Your task is to detect when the conversation has **ACTUALLY MOVED ON** to a DIFFERENT topic - not just mentioned it.
 
-IMPORTANT GUIDELINES:
-- Do NOT rely on specific phrases like "let's move on" or "next topic"
-- People speak naturally - they may discuss topics without explicitly naming them
-- Focus on the CONTENT and CONTEXT of what is being said
-- A topic change happens when the SUBSTANCE of discussion shifts to a different agenda item
-- Brief mentions of other topics are NOT transitions - look for sustained discussion
+## CRITICAL DISTINCTION: Mentions vs Actual Discussion
 
-You must respond with valid JSON only:
+**MENTIONING a topic is NOT the same as DISCUSSING it:**
+- "Today we'll talk about AI agents, coding agents, and computer use agents" = MENTIONING (still on current topic)
+- "So let me explain how computer use agents work. They use screenshots to..." = ACTUALLY DISCUSSING (transition!)
+
+**Signs of ACTUAL topic discussion (transition):**
+- Speaker is EXPLAINING or ELABORATING on the new topic
+- Multiple sentences ABOUT the new topic's content
+- Detailed information, examples, or analysis of the new topic
+- The new topic is the MAIN FOCUS, not a preview/mention
+
+**Signs of just MENTIONING (NO transition):**
+- Listing topics that will be covered ("we'll discuss X, Y, and Z")
+- Brief reference while still on current topic
+- Introducing/previewing what's coming next
+- Single sentence mentions without elaboration
+
+## How to Analyze
+
+1. Read the RECENT transcript carefully
+2. Ask: Is the speaker **actively discussing** a different topic, or just **mentioning** it?
+3. Only recommend transition if there is **sustained discussion** of the new topic (not just a mention)
+
+## Response Format (JSON only)
+
 {
-  "current_topic_id": "the ID of the topic currently being discussed (or null if off-agenda)",
-  "topic_changed": true/false (whether discussion moved from previous topic),
+  "should_transition": true/false,
+  "recommended_topic_id": "ID of topic that best matches RECENT discussion",
+  "recommended_topic_index": number (0-based index),
+  "match_scores": {
+    "current_topic": 0.0-1.0,
+    "recommended_topic": 0.0-1.0
+  },
   "confidence": 0.0-1.0,
-  "reason": "brief explanation of why you chose this topic",
-  "evidence": "key phrase or concept from transcript supporting your choice"
+  "reason": "Brief explanation",
+  "transition_signal": "What in the transcript indicates topic change (or 'none')",
+  "is_actual_discussion": true/false
 }
 
-Confidence guidelines:
-- 0.9+: Discussion clearly and directly matches topic content
-- 0.8-0.9: Strong semantic match between discussion and topic
-- 0.7-0.8: Reasonable match with some related concepts
-- <0.7: Unclear match - do not recommend a topic change
+## Confidence Guidelines
 
-If the current discussion doesn't clearly match any agenda topic, return:
-- current_topic_id: null
-- topic_changed: false (keep current topic active)
-- low confidence
+- **0.90+**: Speaker is clearly explaining/discussing the new topic in detail
+- **0.80-0.90**: Strong indication of new topic discussion (multiple sentences about it)
+- **0.70-0.80**: Possible transition - some discussion of new topic
+- **<0.70**: Just mentions, previews, or unclear - DO NOT transition
 
-It's better to stay on the current topic than to incorrectly jump to another."""
+## CRITICAL RULES
 
-UNIFIED_TOPIC_DETECTION_USER_TEMPLATE = """## Meeting Agenda Topics
+1. **MENTIONS ARE NOT TRANSITIONS** - "We'll cover coding agents next" is NOT a transition to coding agents
+2. **Require SUSTAINED discussion** - at least 2-3 sentences actually ABOUT the new topic
+3. **Introductions stay on current topic** - "Today we'll discuss X, Y, Z" keeps us on the intro/current topic
+4. **When in doubt, DON'T transition** - false positives are worse than missed transitions
+5. **Look for EXPLANATION, not just KEYWORDS** - seeing "computer use" isn't enough; they must be EXPLAINING it"""
+
+
+UNIFIED_TOPIC_DETECTION_USER_TEMPLATE = """## MEETING AGENDA (in order)
+
 {all_topics}
 
-## Current Topic Being Tracked
+---
+
+## CURRENTLY TRACKED TOPIC
+
 {current_topic_info}
 
-## Recent Transcript
+---
+
+## RECENT TRANSCRIPT (analyze for topic detection)
+
 {transcript}
 
-Based on the transcript content, which agenda topic is currently being discussed?
+---
+
+## YOUR TASK
+
+1. Read the transcript above (focus on the MOST RECENT statements)
+2. Compare how well the discussion matches the CURRENT topic vs OTHER topics
+3. If the recent discussion better matches a DIFFERENT topic, set should_transition=true
+
 Respond with JSON only:"""
 
 
 # Required fields for unified detection response
-UNIFIED_DETECTION_REQUIRED_FIELDS = ["current_topic_id", "confidence"]
+UNIFIED_DETECTION_REQUIRED_FIELDS = ["should_transition", "recommended_topic_id", "confidence"]
 
 
 def format_unified_topic_detection_prompt(
@@ -435,7 +472,10 @@ def format_unified_topic_detection_prompt(
 
     This is the PRIMARY detection method - pure LLM context analysis.
     No word patterns, no keyword matching. The LLM analyzes conversation
-    content and determines which agenda topic is being discussed.
+    content and determines if a topic transition should occur.
+
+    REVISED: Now explicitly asks for transition detection, not just topic matching.
+    Includes match scores for current vs recommended topic to enable comparison.
 
     Args:
         all_items: All agenda items (not just upcoming)
@@ -449,36 +489,47 @@ def format_unified_topic_detection_prompt(
     # Sanitize transcript to prevent prompt injection
     safe_transcript = sanitize_transcript(transcript_text)
 
-    # Format all topics with their details
+    # Format all topics with their details - emphasize NON-current topics
     topics_parts = []
     for i, item in enumerate(all_items):
-        status_indicator = ""
-        if item.get("status") == "completed":
-            status_indicator = " [COMPLETED]"
-        elif item.get("status") == "skipped":
-            status_indicator = " [SKIPPED]"
-        elif item.get("status") == "in_progress":
-            status_indicator = " [CURRENT]"
+        status = item.get("status", "pending")
 
-        desc = item.get("description") or "No description"
+        # Status indicator with emphasis
+        if status == "completed":
+            status_indicator = " ✓ [COMPLETED - skip this]"
+        elif status == "skipped":
+            status_indicator = " ✗ [SKIPPED - skip this]"
+        elif status == "in_progress":
+            status_indicator = " ▶ [CURRENT]"
+        else:
+            status_indicator = " ○ [PENDING - could transition to this]"
+
+        desc = item.get("description") or "No description provided"
+
+        # Include more context for pending topics to help LLM match
         topics_parts.append(
-            f"{i + 1}. ID: {item.get('id', 'unknown')}{status_indicator}\n"
-            f"   Title: {item.get('title', 'Unknown')}\n"
+            f"Topic {i + 1}: {item.get('title', 'Unknown')}{status_indicator}\n"
+            f"   ID: {item.get('id', 'unknown')}\n"
             f"   Description: {desc}"
         )
 
-    all_topics = "\n\n".join(topics_parts) if topics_parts else "No agenda topics"
+    all_topics = "\n\n".join(topics_parts) if topics_parts else "No agenda topics defined"
 
-    # Format current topic info
+    # Format current topic info with clear emphasis
     if current_item and current_index >= 0:
         current_topic_info = (
-            f"Index: {current_index}\n"
-            f"ID: {current_item.get('id', 'unknown')}\n"
-            f"Title: {current_item.get('title', 'Unknown')}\n"
-            f"Description: {current_item.get('description') or 'No description'}"
+            f"Topic Index: {current_index} (0-based)\n"
+            f"Topic ID: {current_item.get('id', 'unknown')}\n"
+            f"Title: \"{current_item.get('title', 'Unknown')}\"\n"
+            f"Description: {current_item.get('description') or 'No description'}\n"
+            f"\n⚠️ IMPORTANT: Only stay on this topic if the RECENT transcript clearly matches it.\n"
+            f"If the discussion has moved to content matching another topic, recommend transition!"
         )
     else:
-        current_topic_info = "No topic currently active (meeting just started)"
+        current_topic_info = (
+            "No topic currently active (meeting just started)\n"
+            "→ Recommend the topic that best matches the current discussion."
+        )
 
     user_prompt = UNIFIED_TOPIC_DETECTION_USER_TEMPLATE.format(
         all_topics=all_topics,

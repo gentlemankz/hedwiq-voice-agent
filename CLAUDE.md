@@ -99,13 +99,28 @@ Required in `.env`:
 - `MAX_CONCURRENT_ALIGNMENTS = 3` - Backpressure limit
 - `DEDUPE_TTL_MINUTES = 5` - Reference deduplication TTL
 
-### Agenda Tracking (Phase 4)
-- `STABILITY_CONSECUTIVE_K = 1` - Consecutive predictions needed
-- `STABILITY_TIME_THRESHOLD = 5.0` - Seconds of consistent prediction needed
-- `SWITCH_CONFIDENCE_THRESHOLD = 0.70` - Minimum LLM confidence for topic switch
-- `HYSTERESIS_COOLDOWN = 8.0` - Minimum seconds between topic switches
-- `MIN_ANALYSIS_INTERVAL = 3.0` - Minimum seconds between LLM analyses
-- `ANALYSIS_DEBOUNCE_SECONDS = 2.0` - Debounce delay before analysis
-- `MIN_SEGMENT_WORDS_FOR_DETECTION = 4` - Minimum words to trigger analysis
+### Agenda Tracking (Phase 4 - Revised v2)
+- `STABILITY_CONSECUTIVE_K = 2` - Consecutive predictions needed before transition
+- `STABILITY_TIME_THRESHOLD = 4.0` - Seconds of consistent prediction needed
+- `SWITCH_CONFIDENCE_THRESHOLD = 0.80` - Minimum LLM confidence for topic switch
+- `HYSTERESIS_COOLDOWN = 5.0` - Minimum seconds between topic switches
+- `MIN_TIME_ON_TOPIC = 15.0` - **NEW**: Minimum seconds on current topic before allowing transition
+- `MIN_ANALYSIS_INTERVAL = 2.0` - Minimum seconds between LLM analyses
+- `ANALYSIS_DEBOUNCE_SECONDS = 1.5` - Debounce delay before analysis
+- `MIN_SEGMENT_WORDS_FOR_DETECTION = 5` - Minimum words to trigger analysis
+
+**Topic Detection Flow (Revised v2)**:
+1. LLM explicitly asked if topic should transition with `should_transition` flag
+2. **Critical distinction**: MENTIONS are NOT transitions - must have SUSTAINED DISCUSSION
+3. Minimum 15 seconds on current topic before transitions allowed
+4. Requires 2 consecutive predictions OR 4 seconds of consistent prediction
+5. Recent transcript segments marked with `(RECENT)` to help LLM focus
+6. Very high confidence (≥0.90) can bypass stability after min time met
+
+**Transition Requirements**:
+- Speaker must be EXPLAINING/ELABORATING on new topic (not just mentioning it)
+- Multiple sentences actually ABOUT the new topic content required
+- "Today we'll discuss X, Y, Z" = stays on current topic (just listing)
+- "Let me explain how X works..." = potential transition (actual discussion)
 
 **Note**: Word-based patterns are DEPRECATED. All detection uses pure LLM context analysis.

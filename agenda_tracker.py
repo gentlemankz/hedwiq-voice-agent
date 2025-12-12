@@ -57,6 +57,7 @@ from schemas.agenda import (
     STABILITY_TIME_THRESHOLD,
     SWITCH_CONFIDENCE_THRESHOLD,
     HYSTERESIS_COOLDOWN,
+    MIN_TIME_ON_TOPIC,
     MIN_ANALYSIS_INTERVAL,
     ANALYSIS_DEBOUNCE_SECONDS,
     MAX_TRANSCRIPT_BUFFER,
@@ -99,6 +100,7 @@ class AgendaTracker:
     current_item_index: int = -1  # -1 = not started
     is_meeting_started: bool = False
     is_meeting_ended: bool = False
+    current_topic_started_at: float = 0.0  # When current topic started (for min time check)
 
     # Transcript buffer
     transcript_buffer: List[TranscriptEntry] = field(default_factory=list)
@@ -317,10 +319,21 @@ class AgendaTracker:
                 logger.error(f"Topic detection error: {e}", exc_info=True)
 
     def _build_transcript_text(self) -> str:
-        """Build combined transcript text from buffer."""
+        """
+        Build combined transcript text from buffer with emphasis on recent speech.
+
+        REVISED: Now includes markers for recent vs older content to help the LLM
+        focus on the most recent discussion when detecting topic transitions.
+        """
+        # Use more entries for context (up to 20)
+        entries = self.transcript_buffer[-20:]
+
+        if not entries:
+            return ""
+
         # Merge adjacent same-speaker entries
         merged = []
-        for entry in self.transcript_buffer[-15:]:  # Last 15 entries
+        for entry in entries:
             if merged and merged[-1]["identity"] == entry.speaker_identity:
                 merged[-1]["text"] += " " + entry.text
             else:
@@ -331,9 +344,19 @@ class AgendaTracker:
                     "segment_id": entry.segment_id,
                 })
 
+        # Build output with recency markers
         lines = []
-        for turn in merged:
-            lines.append(f"[{turn['name']}]: {turn['text']}")
+        total_turns = len(merged)
+
+        # Mark the last few turns as "RECENT" to help LLM focus
+        recent_threshold = max(1, total_turns - 3)  # Last 3 turns are "recent"
+
+        for i, turn in enumerate(merged):
+            if i >= recent_threshold:
+                # Recent turns - mark them for emphasis
+                lines.append(f"[{turn['name']}] (RECENT): {turn['text']}")
+            else:
+                lines.append(f"[{turn['name']}]: {turn['text']}")
 
         return "\n".join(lines)
 
@@ -343,11 +366,11 @@ class AgendaTracker:
 
     async def _analyze_with_llm(self, transcript_text: str):
         """
-        Use LLM to analyze transcript and detect current topic.
+        Use LLM to analyze transcript and detect topic transitions.
 
-        This is the ONLY detection method - no word patterns, no keyword matching.
-        The LLM analyzes the conversation context and determines which agenda
-        topic is being discussed.
+        REVISED: Now uses the `should_transition` flag from LLM response
+        instead of just comparing topic IDs. This allows the LLM to explicitly
+        recommend transitions based on conversation context.
         """
         if not self.agenda or self.is_meeting_ended:
             return
@@ -373,28 +396,55 @@ class AgendaTracker:
             logger.debug("LLM returned no detection result")
             return
 
+        # Log the result with transition flag
         logger.info(
-            f"LLM detection result: topic_id={result.next_topic_id}, "
-            f"confidence={result.confidence:.2f}, reason={result.reason}"
+            f"LLM detection: should_transition={result.has_transitioned}, "
+            f"topic_id={result.next_topic_id}, confidence={result.confidence:.2f}, "
+            f"reason={result.reason}"
         )
 
-        # Handle detection result
-        if result.next_topic_id and result.confidence >= SWITCH_CONFIDENCE_THRESHOLD:
+        # Check if LLM explicitly recommends a transition
+        if result.has_transitioned and result.confidence >= SWITCH_CONFIDENCE_THRESHOLD:
+            if not result.next_topic_id:
+                logger.warning("LLM recommended transition but no topic_id provided")
+                return
+
             detected_idx = self._find_item_index(result.next_topic_id)
 
             if detected_idx < 0:
                 logger.warning(f"LLM returned unknown topic_id: {result.next_topic_id}")
                 return
 
-            # If this is a different topic than current, try to transition
-            if detected_idx != self.current_item_index:
-                await self._try_transition(
-                    detected_idx,
-                    confidence=result.confidence,
-                    reason=result.reason or "llm_context_analysis"
+            # Validate the transition makes sense
+            if detected_idx == self.current_item_index:
+                logger.debug(f"LLM recommended transition to current topic (idx={detected_idx}), ignoring")
+                return
+
+            # Check if target topic is already completed/skipped
+            target_item = items[detected_idx]
+            if target_item.get("status") in ("completed", "skipped"):
+                logger.info(f"LLM recommended topic {detected_idx} but it's already {target_item.get('status')}")
+                return
+
+            # Attempt the transition
+            logger.info(
+                f"LLM recommends transition: {self.current_item_index} -> {detected_idx} "
+                f"(evidence: {result.evidence or 'none'})"
+            )
+            await self._try_transition(
+                detected_idx,
+                confidence=result.confidence,
+                reason=result.reason or "llm_transition_detection"
+            )
+        else:
+            # No transition recommended
+            if result.has_transitioned and result.confidence < SWITCH_CONFIDENCE_THRESHOLD:
+                logger.debug(
+                    f"LLM suggested transition but confidence too low "
+                    f"({result.confidence:.2f} < {SWITCH_CONFIDENCE_THRESHOLD})"
                 )
             else:
-                logger.debug(f"LLM confirmed current topic (idx={detected_idx})")
+                logger.debug(f"LLM confirmed current topic (idx={self.current_item_index})")
 
     async def _llm_unified_detection(
         self,
@@ -404,12 +454,17 @@ class AgendaTracker:
         transcript_text: str
     ) -> Optional[TopicDetectionResult]:
         """
-        Use LLM to detect which agenda topic is currently being discussed.
+        Use LLM to detect if a topic transition should occur.
 
-        This unified approach:
-        - Gives LLM all agenda items (not just upcoming)
-        - Asks LLM to identify which topic matches current discussion
-        - Allows non-sequential topic detection (meetings are unpredictable)
+        REVISED: Now explicitly asks LLM whether to transition, not just which topic matches.
+        The LLM compares current topic vs other topics and recommends transitions.
+
+        Returns:
+            TopicDetectionResult with:
+            - has_transitioned: True if LLM recommends switching topics
+            - next_topic_id: The topic ID to switch to (if transitioning)
+            - confidence: How confident the LLM is in its recommendation
+            - reason: Explanation for the decision
         """
         try:
             system_prompt, user_prompt = format_unified_topic_detection_prompt(
@@ -425,12 +480,30 @@ class AgendaTracker:
             )
 
             if result:
+                # Extract the new response format
+                should_transition = result.get("should_transition", False)
+                recommended_topic_id = result.get("recommended_topic_id")
+                confidence = float(result.get("confidence", 0))
+                reason = result.get("reason", "")
+                transition_signal = result.get("transition_signal", "")
+
+                # Log match scores if provided (for debugging)
+                match_scores = result.get("match_scores", {})
+                if match_scores:
+                    logger.debug(
+                        f"Match scores - current: {match_scores.get('current_topic', 'N/A')}, "
+                        f"recommended: {match_scores.get('recommended_topic', 'N/A')}"
+                    )
+
+                # Build evidence string from transition_signal
+                evidence = transition_signal if transition_signal != "none" else None
+
                 return TopicDetectionResult(
-                    has_transitioned=result.get("topic_changed", False),
-                    next_topic_id=result.get("current_topic_id"),
-                    confidence=float(result.get("confidence", 0)),
-                    reason=result.get("reason"),
-                    evidence=result.get("evidence"),
+                    has_transitioned=should_transition,
+                    next_topic_id=recommended_topic_id,
+                    confidence=confidence,
+                    reason=reason,
+                    evidence=evidence,
                 )
 
             return None
@@ -593,7 +666,8 @@ class AgendaTracker:
         """
         Try to transition to a new topic with stability checks.
 
-        Implements hysteresis to prevent rapid topic switching.
+        REVISED: Added minimum time on topic check to prevent transitioning
+        away from a topic that was just started.
         """
         if not self.agenda:
             return
@@ -607,17 +681,31 @@ class AgendaTracker:
 
         now = time.time()
 
-        # Hysteresis: don't switch too soon after last switch
+        # CHECK 1: Minimum time on current topic
+        # Don't switch away from a topic that was just started
+        if self.current_topic_started_at > 0:
+            time_on_current_topic = now - self.current_topic_started_at
+            if time_on_current_topic < MIN_TIME_ON_TOPIC:
+                logger.info(
+                    f"Minimum time on topic not met ({time_on_current_topic:.1f}s < {MIN_TIME_ON_TOPIC}s), "
+                    f"skipping transition to topic {next_item_idx}"
+                )
+                return
+
+        # CHECK 2: Hysteresis cooldown between switches
         if now - self.stability.last_switch_time < HYSTERESIS_COOLDOWN:
-            logger.info(f"Hysteresis cooldown active ({HYSTERESIS_COOLDOWN}s), skipping transition")
+            logger.info(
+                f"Hysteresis cooldown active ({HYSTERESIS_COOLDOWN}s), "
+                f"skipping transition (confidence={confidence:.2f})"
+            )
             return
 
-        # Confidence check
+        # CHECK 3: Confidence threshold
         if confidence < SWITCH_CONFIDENCE_THRESHOLD:
             logger.info(f"Confidence {confidence:.2f} below threshold {SWITCH_CONFIDENCE_THRESHOLD}, skipping")
             return
 
-        # Stability check: same prediction K times in a row OR T seconds
+        # CHECK 4: Stability - require consistent predictions
         if next_item_id == self.stability.last_predicted_topic:
             self.stability.consecutive_predictions += 1
         else:
@@ -628,14 +716,17 @@ class AgendaTracker:
         time_stable = (now - self.stability.first_prediction_time) >= STABILITY_TIME_THRESHOLD
         count_stable = self.stability.consecutive_predictions >= STABILITY_CONSECUTIVE_K
 
-        if not (time_stable or count_stable):
+        # Very high confidence (>=0.90) can bypass stability if time on topic is sufficient
+        high_confidence_bypass = confidence >= 0.90 and (now - self.current_topic_started_at) >= MIN_TIME_ON_TOPIC
+
+        if not (time_stable or count_stable or high_confidence_bypass):
             logger.info(
                 f"Stability check pending: consecutive={self.stability.consecutive_predictions}/{STABILITY_CONSECUTIVE_K}, "
-                f"time_stable={time_stable}"
+                f"time_stable={time_stable}, confidence={confidence:.2f}"
             )
             return
 
-        # Commit the transition
+        # All checks passed - commit the transition
         logger.info(
             f"TOPIC TRANSITION: {self.current_item_index} -> {next_item_idx} "
             f"(confidence={confidence:.2f}, reason={reason})"
@@ -649,7 +740,7 @@ class AgendaTracker:
                 reason=reason
             )
 
-        # Skip any items between current and next
+        # Skip any items between current and next (for non-sequential transitions)
         for i in range(self.current_item_index + 1, next_item_idx):
             if items[i].get("status") == "pending":
                 await self._skip_topic(i, reason="skipped_in_transition")
@@ -749,6 +840,7 @@ class AgendaTracker:
 
         # Update local state
         self.current_item_index = item_idx
+        self.current_topic_started_at = time.time()  # Track when topic started for min time check
         item["status"] = "in_progress"
         item["startedAt"] = start_time_iso
         item["startTranscriptRef"] = transcript_ref
