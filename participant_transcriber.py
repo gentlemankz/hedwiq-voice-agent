@@ -14,6 +14,11 @@ from livekit.agents import stt
 from insight_analyzer import TranscriptEntry, InsightAnalyzer
 from document_referencer import DocumentReferencer
 
+# Type hint import for agenda tracker (avoids circular import)
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from agenda_tracker import AgendaTracker
+
 logger = logging.getLogger("hedwiq-agent")
 
 
@@ -28,6 +33,7 @@ class ParticipantTranscriber:
         stt_instance: stt.STT,
         insight_analyzer: InsightAnalyzer,
         document_referencer: Optional[DocumentReferencer] = None,
+        agenda_tracker: Optional["AgendaTracker"] = None,
         transcription_topic: str = "lk.transcription",
     ):
         self.room = room
@@ -36,6 +42,7 @@ class ParticipantTranscriber:
         self.stt = stt_instance
         self.insight_analyzer = insight_analyzer
         self.document_referencer = document_referencer
+        self.agenda_tracker = agenda_tracker
         self.transcription_topic = transcription_topic
         self._task: Optional[asyncio.Task] = None
         self._segment_counter = 0
@@ -119,6 +126,10 @@ class ParticipantTranscriber:
                                     speaker_identity=self.participant.identity,
                                     duration_seconds=duration_seconds,
                                 )
+
+                            # Phase 4: Feed transcript to agenda tracker for topic detection
+                            if self.agenda_tracker:
+                                await self.agenda_tracker.process_transcript(entry)
 
                             current_segment_id = None
                             self._segment_start_time = None

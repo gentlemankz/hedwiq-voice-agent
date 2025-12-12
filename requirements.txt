@@ -46,3 +46,11 @@ livekit-api>=0.7.0
 # Supabase client (for downloading documents from Supabase Storage)
 # Required for /documents/process endpoint
 supabase>=2.0.0
+
+# =============================================================================
+# Agenda Tracking Feature Dependencies (Phase 4)
+# =============================================================================
+
+# Async PostgreSQL driver (for direct database access)
+# Required for AgendaTracker to read/write agenda status
+asyncpg>=0.29.0

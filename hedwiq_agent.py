@@ -1,10 +1,11 @@
 """
-Hedwiq Agent - Real-time Transcription and Insight Extraction
+Hedwiq Agent - Real-time Transcription, Insight Extraction, and Agenda Tracking
 
 A LiveKit agent that provides:
 1. Real-time transcription for all meeting participants
 2. AI-powered insight extraction using Azure OpenAI
 3. Publishing insights via LiveKit text streams
+4. (Phase 4) Automatic agenda topic detection and progress tracking
 
 This is the main unified agent (Option A from PHASE2_INSIGHTS_PLAN.md).
 
@@ -17,6 +18,12 @@ Improvements implemented:
 - Minimum content length filter
 - Retry logic for LLM parsing failures
 - Merged adjacent same-speaker turns
+
+Phase 4 additions:
+- AgendaTracker for automatic topic detection
+- Multi-signal detection (explicit phrases, keywords, LLM)
+- Stability/hysteresis to prevent topic thrashing
+- Participant attributes for late joiner sync
 """
 
 import asyncio
@@ -41,6 +48,9 @@ from persistent_store import PersistentDocumentStore
 from hybrid_retriever import RoomRetrieverManager
 from transcription_config import get_stt_keyterms, get_stt_language, get_stt_model
 
+# Agenda tracking imports (Phase 4)
+from agenda_tracker import AgendaTracker
+
 # Load environment variables
 load_dotenv(dotenv_path=Path(__file__).parent / ".env")
 
@@ -54,15 +64,17 @@ TRANSCRIPTION_TOPIC = "lk.transcription"
 class HedwiqAgent:
     """
     Main Hedwiq agent that manages transcription, insight extraction,
-    and document reference detection.
+    document reference detection, and agenda tracking.
 
-    This unified agent (Option A) handles STT, LLM analysis, and document
-    retrieval in one process, providing lower latency and simpler deployment.
+    This unified agent (Option A) handles STT, LLM analysis, document
+    retrieval, and agenda tracking in one process, providing lower latency
+    and simpler deployment.
 
     Components:
     - ParticipantTranscriber: Per-participant STT with VAD
     - InsightAnalyzer: Queue-based LLM insight extraction
     - DocumentReferencer: Real-time document reference detection (Phase 3)
+    - AgendaTracker: Automatic topic detection and progress tracking (Phase 4)
     """
 
     def __init__(
@@ -75,6 +87,7 @@ class HedwiqAgent:
         document_store: Optional[PersistentDocumentStore] = None,
         retriever_manager: Optional[RoomRetrieverManager] = None,
         document_referencer: Optional[DocumentReferencer] = None,
+        agenda_tracker: Optional[AgendaTracker] = None,
     ):
         self.room = room
         self.room_id = room_id or room.name
@@ -136,6 +149,14 @@ class HedwiqAgent:
             retriever_manager=self.retriever_manager,
         )
 
+        # Initialize agenda tracking (Phase 4)
+        # Tracks meeting progress and detects topic transitions
+        self.agenda_tracker = agenda_tracker or AgendaTracker(
+            room=room,
+            room_id=self.room_id,
+            llm=self.llm,
+        )
+
     def _get_azure_deployment(self) -> str:
         """Get Azure OpenAI deployment name from environment."""
         import os
@@ -174,6 +195,9 @@ class HedwiqAgent:
         # Start document referencer (Phase 3)
         await self.document_referencer.start()
 
+        # Start agenda tracker (Phase 4)
+        await self.agenda_tracker.start()
+
         logger.info(
             f"Found {len(self.room.remote_participants)} remote participants"
         )
@@ -197,9 +221,12 @@ class HedwiqAgent:
                     await self._start_transcriber(participant, track_pub.track)
 
     async def stop(self):
-        """Stop all transcribers and document referencer."""
+        """Stop all transcribers, document referencer, and agenda tracker."""
         # Stop document referencer
         await self.document_referencer.stop()
+
+        # Stop agenda tracker (Phase 4)
+        await self.agenda_tracker.stop()
 
         # Stop all transcribers
         for transcriber in self.transcribers.values():
@@ -282,6 +309,7 @@ class HedwiqAgent:
             self.stt,
             self.insight_analyzer,
             self.document_referencer,  # Phase 3: Pass document referencer
+            self.agenda_tracker,       # Phase 4: Pass agenda tracker
             transcription_topic=TRANSCRIPTION_TOPIC,
         )
         self.transcribers[key] = transcriber
@@ -301,6 +329,8 @@ async def entrypoint(ctx: JobContext):
     6. Publishes insights via text streams (hedwiq.insight topic)
     7. (Phase 3) Detects document references using hybrid retrieval + LLM alignment
     8. Publishes confirmed references via hedwiq.document_reference topic
+    9. (Phase 4) Tracks agenda progress and detects topic transitions
+    10. Publishes agenda events via hedwiq.agenda topic
     """
     logger.info(f"Hedwiq agent starting for room: {ctx.room.name}")
 
