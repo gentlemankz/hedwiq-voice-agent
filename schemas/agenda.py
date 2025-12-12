@@ -327,18 +327,19 @@ AGENDA_TOPIC = "hedwiq.agenda"
 AGENT_IDENTITY_PREFIX = "hedwiq"
 
 # Stability/Hysteresis parameters for topic detection
-STABILITY_CONSECUTIVE_K = 2       # Require K consecutive predictions of same topic
-STABILITY_TIME_THRESHOLD = 10.0   # OR require T seconds of consistent prediction
-SWITCH_CONFIDENCE_THRESHOLD = 0.75  # Minimum confidence to consider a switch
-HYSTERESIS_COOLDOWN = 15.0        # Minimum seconds between topic switches
+# Post-review: Lowered thresholds for faster detection while still preventing thrashing
+STABILITY_CONSECUTIVE_K = 1       # Require K consecutive predictions (lowered from 2)
+STABILITY_TIME_THRESHOLD = 5.0    # OR require T seconds of consistent prediction (lowered from 10)
+SWITCH_CONFIDENCE_THRESHOLD = 0.70  # Minimum confidence to consider a switch (lowered from 0.75)
+HYSTERESIS_COOLDOWN = 8.0         # Minimum seconds between topic switches (lowered from 15)
 
-# Analysis intervals
-MIN_ANALYSIS_INTERVAL = 5.0       # Minimum seconds between analysis runs
-ANALYSIS_DEBOUNCE_SECONDS = 3.0   # Debounce delay before analysis
+# Analysis intervals - more frequent analysis for responsive detection
+MIN_ANALYSIS_INTERVAL = 3.0       # Minimum seconds between analysis runs (lowered from 5)
+ANALYSIS_DEBOUNCE_SECONDS = 2.0   # Debounce delay before analysis (lowered from 3)
 MAX_TRANSCRIPT_BUFFER = 20        # Maximum transcript entries to buffer
 
 # Pre-filter thresholds
-MIN_SEGMENT_WORDS_FOR_DETECTION = 6  # Minimum words to consider for topic detection
+MIN_SEGMENT_WORDS_FOR_DETECTION = 4  # Minimum words to consider for topic detection (lowered from 6)
 
 # NOTE: Off-agenda detection constants removed (R1+R2)
 # Feature was defined in plan but not implemented in Phase 4.

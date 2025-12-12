@@ -126,45 +126,37 @@ Has the meeting ended? Respond with JSON only:"""
 
 
 # ============================================================================
-# Explicit Transition Patterns
+# DEPRECATED: Word-based Patterns (kept for reference, NOT used in detection)
+# ============================================================================
+#
+# Post-review decision (Reviewer 1 + Reviewer 2):
+# Word-based pattern matching is REMOVED from topic detection.
+# Meetings are unpredictable - people speak differently, use different phrases,
+# have different communication styles. Relying on specific phrases like
+# "let's get started" or "next topic" fails in real-world scenarios.
+#
+# ALL detection now uses pure LLM context analysis via format_unified_topic_detection_prompt()
+#
+# The patterns below are kept ONLY for historical reference. They are NOT used.
 # ============================================================================
 
-# High-confidence transition phrases (regex patterns)
-EXPLICIT_TRANSITION_PATTERNS = [
+# DEPRECATED - NOT USED - Historical reference only
+_DEPRECATED_EXPLICIT_TRANSITION_PATTERNS = [
     r"let's move (on )?to\s+(.+)",
     r"next (on the agenda|item|topic) is\s+(.+)",
-    r"moving on to\s+(.+)",
-    r"now (let's|we'll) (discuss|talk about|cover)\s+(.+)",
-    r"that covers (.+),? now",
-    r"let's (switch|shift) to\s+(.+)",
-    r"our next (topic|item|point) is\s+(.+)",
-    r"time to (discuss|talk about|move to)\s+(.+)",
-    r"shall we (move|proceed) to\s+(.+)",
-    r"i think we('re| are) done with\s+(.+)",
-    r"that wraps up\s+(.+)",
-    r"we('ve| have) covered\s+(.+)",
+    # ... etc
 ]
 
-# Meeting start phrases
-MEETING_START_PATTERNS = [
+# DEPRECATED - NOT USED - Historical reference only
+_DEPRECATED_MEETING_START_PATTERNS = [
     r"let's (get started|begin|kick off)",
-    r"(first|our first) (topic|item|point)",
-    r"to start (off|with|today)",
-    r"let me (start|begin) (with|by)",
-    r"shall we (start|begin)",
-    r"agenda for today",
+    # ... etc
 ]
 
-# Meeting end phrases
-MEETING_END_PATTERNS = [
+# DEPRECATED - NOT USED - Historical reference only
+_DEPRECATED_MEETING_END_PATTERNS = [
     r"that's (all|everything) for today",
-    r"let's wrap (up|things up)",
-    r"meeting (adjourned|concluded|over)",
-    r"(thank you|thanks) (all|everyone)",
-    r"see you (next|all|later)",
-    r"we('re| are) out of time",
-    r"any final (questions|thoughts)",
-    r"to summarize|in summary",
+    # ... etc
 ]
 
 
@@ -372,3 +364,126 @@ DETECTION_TIMEOUT_SECONDS = 3.0    # Max time to wait for LLM response
 DETECTION_MAX_RETRIES = 1          # Retries on timeout/error
 DETECTION_TEMPERATURE = 0.0        # Use deterministic output
 DETECTION_MAX_TOKENS = 200         # Max response tokens
+
+
+# ============================================================================
+# Unified Topic Detection (Pure LLM Context Analysis)
+# ============================================================================
+
+UNIFIED_TOPIC_DETECTION_SYSTEM_PROMPT = """You are analyzing a meeting transcript to determine which agenda topic is currently being discussed.
+
+Your task:
+1. Read the meeting transcript
+2. Compare the discussion content to ALL agenda topics
+3. Determine which topic best matches what is being discussed
+4. Assess if the discussion has moved from the current topic to a different one
+
+IMPORTANT GUIDELINES:
+- Do NOT rely on specific phrases like "let's move on" or "next topic"
+- People speak naturally - they may discuss topics without explicitly naming them
+- Focus on the CONTENT and CONTEXT of what is being said
+- A topic change happens when the SUBSTANCE of discussion shifts to a different agenda item
+- Brief mentions of other topics are NOT transitions - look for sustained discussion
+
+You must respond with valid JSON only:
+{
+  "current_topic_id": "the ID of the topic currently being discussed (or null if off-agenda)",
+  "topic_changed": true/false (whether discussion moved from previous topic),
+  "confidence": 0.0-1.0,
+  "reason": "brief explanation of why you chose this topic",
+  "evidence": "key phrase or concept from transcript supporting your choice"
+}
+
+Confidence guidelines:
+- 0.9+: Discussion clearly and directly matches topic content
+- 0.8-0.9: Strong semantic match between discussion and topic
+- 0.7-0.8: Reasonable match with some related concepts
+- <0.7: Unclear match - do not recommend a topic change
+
+If the current discussion doesn't clearly match any agenda topic, return:
+- current_topic_id: null
+- topic_changed: false (keep current topic active)
+- low confidence
+
+It's better to stay on the current topic than to incorrectly jump to another."""
+
+UNIFIED_TOPIC_DETECTION_USER_TEMPLATE = """## Meeting Agenda Topics
+{all_topics}
+
+## Current Topic Being Tracked
+{current_topic_info}
+
+## Recent Transcript
+{transcript}
+
+Based on the transcript content, which agenda topic is currently being discussed?
+Respond with JSON only:"""
+
+
+# Required fields for unified detection response
+UNIFIED_DETECTION_REQUIRED_FIELDS = ["current_topic_id", "confidence"]
+
+
+def format_unified_topic_detection_prompt(
+    all_items: list,
+    current_item: dict | None,
+    current_index: int,
+    transcript_text: str
+) -> tuple[str, str]:
+    """
+    Format the unified topic detection prompt.
+
+    This is the PRIMARY detection method - pure LLM context analysis.
+    No word patterns, no keyword matching. The LLM analyzes conversation
+    content and determines which agenda topic is being discussed.
+
+    Args:
+        all_items: All agenda items (not just upcoming)
+        current_item: Current active item or None
+        current_index: Index of current item (-1 if not started)
+        transcript_text: Recent transcript text
+
+    Returns:
+        tuple: (system_prompt, user_prompt)
+    """
+    # Sanitize transcript to prevent prompt injection
+    safe_transcript = sanitize_transcript(transcript_text)
+
+    # Format all topics with their details
+    topics_parts = []
+    for i, item in enumerate(all_items):
+        status_indicator = ""
+        if item.get("status") == "completed":
+            status_indicator = " [COMPLETED]"
+        elif item.get("status") == "skipped":
+            status_indicator = " [SKIPPED]"
+        elif item.get("status") == "in_progress":
+            status_indicator = " [CURRENT]"
+
+        desc = item.get("description") or "No description"
+        topics_parts.append(
+            f"{i + 1}. ID: {item.get('id', 'unknown')}{status_indicator}\n"
+            f"   Title: {item.get('title', 'Unknown')}\n"
+            f"   Description: {desc}"
+        )
+
+    all_topics = "\n\n".join(topics_parts) if topics_parts else "No agenda topics"
+
+    # Format current topic info
+    if current_item and current_index >= 0:
+        current_topic_info = (
+            f"Index: {current_index}\n"
+            f"ID: {current_item.get('id', 'unknown')}\n"
+            f"Title: {current_item.get('title', 'Unknown')}\n"
+            f"Description: {current_item.get('description') or 'No description'}"
+        )
+    else:
+        current_topic_info = "No topic currently active (meeting just started)"
+
+    user_prompt = UNIFIED_TOPIC_DETECTION_USER_TEMPLATE.format(
+        all_topics=all_topics,
+        current_topic_info=current_topic_info,
+        transcript=safe_transcript
+    )
+
+    return UNIFIED_TOPIC_DETECTION_SYSTEM_PROMPT, user_prompt

@@ -196,7 +196,11 @@ class HedwiqAgent:
         await self.document_referencer.start()
 
         # Start agenda tracker (Phase 4)
-        await self.agenda_tracker.start()
+        # This is designed to fail gracefully - if it fails, transcription continues
+        try:
+            await self.agenda_tracker.start()
+        except Exception as e:
+            logger.error(f"Failed to start agenda tracker: {e}. Agenda tracking disabled.")
 
         logger.info(
             f"Found {len(self.room.remote_participants)} remote participants"
@@ -281,6 +285,19 @@ class HedwiqAgent:
             f"Participant connected: {participant.identity}, "
             f"name: {participant.name}"
         )
+        # Phase 4: Notify agenda tracker for late joiner sync
+        # This publishes agenda sync event so late joiners get current state
+        if self.agenda_tracker:
+            asyncio.create_task(
+                self._safe_on_participant_connected(participant.identity)
+            )
+
+    async def _safe_on_participant_connected(self, participant_identity: str):
+        """Safely call agenda tracker on_participant_connected with error handling."""
+        try:
+            await self.agenda_tracker.on_participant_connected(participant_identity)
+        except Exception as e:
+            logger.warning(f"Failed to sync agenda for late joiner: {e}")
 
     def _on_participant_disconnected(self, participant: rtc.RemoteParticipant):
         """Handle participant disconnection."""
@@ -357,11 +374,29 @@ async def entrypoint(ctx: JobContext):
         await agent.stop()
 
 
+async def request_handler(req):
+    """
+    Handle job requests - accept all and set identity prefix to 'hedwiq'.
+
+    This ensures the agent's participant identity starts with 'hedwiq',
+    which is required for frontend event filtering (AGENT_IDENTITY_PREFIX).
+
+    NOTE: Do NOT use agent_name in WorkerOptions - that enables explicit dispatch
+    and the agent will never join rooms automatically.
+    """
+    await req.accept(
+        # Set identity with hedwiq prefix for frontend filtering
+        identity=f"hedwiq-{req.id[:8]}",
+        name="Hedwiq Agent",
+    )
+
+
 if __name__ == "__main__":
     cli.run_app(
         WorkerOptions(
             entrypoint_fnc=entrypoint,
-            # Note: Not setting agent_name enables automatic dispatch
-            # The agent will automatically join every new room
+            request_fnc=request_handler,
+            # NOTE: Do NOT set agent_name here - it disables automatic dispatch!
+            # The agent identity prefix is set via request_handler instead.
         )
     )

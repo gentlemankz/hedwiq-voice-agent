@@ -22,6 +22,19 @@ from typing import Optional, List, Dict, Any
 logger = logging.getLogger("hedwiq-agenda-db")
 
 
+def _utc_now_naive() -> datetime:
+    """
+    Get current UTC time as a naive datetime (no timezone info).
+
+    PostgreSQL 'timestamp' columns (without time zone) expect naive datetimes.
+    asyncpg will raise an error if you try to insert a timezone-aware datetime
+    into a 'timestamp without time zone' column.
+
+    This function returns datetime.utcnow() which is naive but represents UTC.
+    """
+    return datetime.utcnow()
+
+
 class AgendaDB:
     """
     Async database client for agenda operations.
@@ -75,11 +88,16 @@ class AgendaDB:
                     "Install it with: pip install asyncpg"
                 )
 
+            # Disable prepared statement caching for pgbouncer compatibility
+            # Supabase uses pgbouncer with transaction pooling, which doesn't
+            # support prepared statements. Setting statement_cache_size=0
+            # forces asyncpg to use simple query protocol instead.
             self._pool = await asyncpg.create_pool(
                 self.database_url,
                 min_size=1,
                 max_size=5,
                 command_timeout=10.0,
+                statement_cache_size=0,  # Required for Supabase/pgbouncer
             )
             logger.info("Connected to PostgreSQL database for agenda tracking")
 
@@ -279,8 +297,8 @@ class AgendaDB:
         """
         await self._ensure_connected()
 
-        # FIX (R3): Use timezone-aware UTC consistently
-        now = datetime.now(timezone.utc)
+        # Use naive UTC datetime for PostgreSQL 'timestamp without time zone' columns
+        now = _utc_now_naive()
 
         async with self._pool.acquire() as conn:
             # Build update query based on status
@@ -297,16 +315,18 @@ class AgendaDB:
                     status, now, transcript_ref, item_id
                 )
             elif status in ("completed", "skipped"):
-                # FIX (R1+R2): Calculate duration from passed started_at or in SQL
+                # Calculate duration from passed started_at or in SQL
                 # This eliminates the extra get_agenda_item() query
-                # FIX (R3): Use timezone-aware comparison consistently
                 if started_at:
                     # Duration passed from caller (preferred)
                     try:
                         start_time = datetime.fromisoformat(
                             started_at.replace("Z", "+00:00")
                         )
-                        # Both now and start_time are timezone-aware
+                        # Convert start_time to naive if it's timezone-aware
+                        if start_time.tzinfo is not None:
+                            start_time = start_time.replace(tzinfo=None)
+                        # Both now and start_time are now naive (UTC)
                         actual_duration = int((now - start_time).total_seconds())
                     except Exception as e:
                         logger.warning(f"Failed to calculate duration from passed started_at: {e}")
@@ -375,7 +395,7 @@ class AgendaDB:
                 SET current_item_index = $1, updated_at = $2
                 WHERE id = $3
                 """,
-                current_item_index, datetime.now(timezone.utc), agenda_id
+                current_item_index, _utc_now_naive(), agenda_id
             )
 
             success = result == "UPDATE 1"
@@ -404,7 +424,7 @@ class AgendaDB:
                 SET meeting_started_at = $1, updated_at = $1
                 WHERE id = $2
                 """,
-                datetime.now(timezone.utc), agenda_id
+                _utc_now_naive(), agenda_id
             )
 
             success = result == "UPDATE 1"
@@ -426,8 +446,8 @@ class AgendaDB:
         """
         await self._ensure_connected()
 
-        # FIX (R3): Use timezone-aware UTC consistently
-        now = datetime.now(timezone.utc)
+        # Use naive UTC datetime for PostgreSQL 'timestamp without time zone' columns
+        now = _utc_now_naive()
 
         async with self._pool.acquire() as conn:
             result = await conn.execute(
