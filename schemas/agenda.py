@@ -300,6 +300,7 @@ class TopicDetectionResult:
     confidence: float = 0.0
     reason: Optional[str] = None
     evidence: Optional[str] = None
+    is_meeting_ending: bool = False  # LLM detected meeting is wrapping up
 
 
 @dataclass

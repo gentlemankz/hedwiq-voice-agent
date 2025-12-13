@@ -116,6 +116,10 @@ class AgendaTracker:
     # Running state
     _running: bool = False
 
+    # Track repeated backward recommendations (sign of LLM confusion)
+    _backward_recommendation_count: int = 0
+    _last_backward_topic_id: Optional[str] = None
+
     def __post_init__(self):
         """Initialize locks after dataclass creation."""
         self.analysis_lock = asyncio.Lock()
@@ -169,6 +173,12 @@ class AgendaTracker:
             if self.agenda.get("meetingStartedAt"):
                 self.is_meeting_started = True
                 logger.info(f"Meeting already started (resuming session)")
+
+            # Check if meeting already ended (prevent restarting a completed meeting)
+            if self.agenda.get("meetingEndedAt") or status == "completed":
+                self.is_meeting_ended = True
+                logger.info(f"Meeting already ended, not restarting agenda tracking")
+                return
 
             # AUTO-START: If agenda is active but meeting not started, start it now
             # This removes the "meeting start phrase" gate that was blocking detection
@@ -249,6 +259,10 @@ class AgendaTracker:
         if not self.agenda:
             return
 
+        # Skip if meeting already ended
+        if self.is_meeting_ended:
+            return
+
         # Log warning but continue if agenda not active (don't silently drop)
         if self.agenda.get("status") != "active":
             logger.debug(f"Agenda status is '{self.agenda.get('status')}', skipping detection")
@@ -287,7 +301,17 @@ class AgendaTracker:
 
     async def _run_analysis(self):
         """Run topic detection analysis on buffered transcripts using LLM."""
+        # Check if meeting already ended (prevents race condition with delayed analysis)
+        if self.is_meeting_ended:
+            logger.debug("Skipping analysis: meeting already ended")
+            return
+
         async with self.analysis_lock:
+            # Double-check after acquiring lock
+            if self.is_meeting_ended:
+                logger.debug("Skipping analysis: meeting ended while waiting for lock")
+                return
+
             if not self.transcript_buffer:
                 return
 
@@ -315,7 +339,7 @@ class AgendaTracker:
 
     def _build_transcript_text(self) -> str:
         """
-        Build FULL conversation transcript from buffer.
+        Build FULL conversation transcript from buffer with [RECENT] markers.
 
         NEW ARCHITECTURE: We give the LLM the complete conversation history,
         not just recent segments. This allows the LLM to understand:
@@ -323,7 +347,9 @@ class AgendaTracker:
         - What topics have been discussed vs mentioned
         - The natural progression of the conversation
 
-        The LLM is smart enough to focus on what's relevant.
+        FIX: We now mark the last N entries as [RECENT] so the LLM knows
+        what's happening NOW vs what happened earlier. This prevents the LLM
+        from getting confused and recommending already-completed topics.
         """
         # Use ALL entries - LLM needs full context
         entries = self.transcript_buffer
@@ -331,24 +357,34 @@ class AgendaTracker:
         if not entries:
             return ""
 
+        # Determine which entries are "recent" (last 10 or 20% of entries, whichever is larger)
+        recent_count = max(10, len(entries) // 5)
+        recent_start_idx = len(entries) - recent_count
+
         # Merge adjacent same-speaker entries for cleaner transcript
+        # Track whether each merged entry contains any recent segments
         merged = []
-        for entry in entries:
+        for i, entry in enumerate(entries):
+            is_recent = i >= recent_start_idx
             if merged and merged[-1]["identity"] == entry.speaker_identity:
                 merged[-1]["text"] += " " + entry.text
+                # Mark as recent if ANY segment in this merged entry is recent
+                merged[-1]["is_recent"] = merged[-1]["is_recent"] or is_recent
             else:
                 merged.append({
                     "identity": entry.speaker_identity,
                     "name": entry.speaker_name,
                     "text": entry.text,
                     "segment_id": entry.segment_id,
+                    "is_recent": is_recent,
                 })
 
-        # Build clean transcript without artificial markers
-        # LLM can figure out what's recent from context
+        # Build transcript with [RECENT] markers for recent entries
+        # This helps the LLM focus on what's happening NOW
         lines = []
         for turn in merged:
-            lines.append(f"[{turn['name']}]: {turn['text']}")
+            prefix = "[RECENT] " if turn.get("is_recent") else ""
+            lines.append(f"{prefix}[{turn['name']}]: {turn['text']}")
 
         return "\n".join(lines)
 
@@ -394,12 +430,27 @@ class AgendaTracker:
         logger.info(
             f"LLM analysis: should_transition={result.has_transitioned}, "
             f"new_topic_id={result.next_topic_id}, "
+            f"is_meeting_ending={result.is_meeting_ending}, "
             f"reasoning={result.reason}"
         )
+
+        # If LLM detected meeting is ending and we're on the last topic, end the meeting
+        if result.is_meeting_ending and not result.has_transitioned:
+            next_pending = self._find_next_pending_topic(items)
+            if next_pending is None:
+                # No more pending topics - this is the last one, end the meeting
+                logger.info(f"LLM detected meeting ending on last topic, ending meeting")
+                await self._handle_meeting_end()
+                return
 
         # Trust the LLM's decision - if it says transition, we transition
         if result.has_transitioned:
             if not result.next_topic_id:
+                # No new topic but transition requested - might be meeting end
+                if result.is_meeting_ending:
+                    logger.info("LLM recommended transition with meeting ending signal, ending meeting")
+                    await self._handle_meeting_end()
+                    return
                 logger.warning("LLM recommended transition but no new_topic_id provided")
                 return
 
@@ -418,7 +469,47 @@ class AgendaTracker:
             target_item = items[detected_idx]
             if target_item.get("status") in ("completed", "skipped"):
                 logger.info(f"LLM recommended topic {detected_idx} but it's already {target_item.get('status')}")
+
+                # FIX: Track repeated backward recommendations
+                # If LLM keeps recommending completed topics, it's confused by the full transcript
+                # After enough repeated failures, advance to next pending topic
+                if detected_idx <= self.current_item_index:
+                    # Track repeated backward recommendations
+                    if result.next_topic_id == self._last_backward_topic_id:
+                        self._backward_recommendation_count += 1
+                    else:
+                        self._backward_recommendation_count = 1
+                        self._last_backward_topic_id = result.next_topic_id
+
+                    logger.debug(
+                        f"Backward recommendation #{self._backward_recommendation_count} "
+                        f"for topic {detected_idx}"
+                    )
+
+                    # After repeated backward recommendations, trust that meeting has moved on
+                    # The LLM is clearly confused - advance to next pending topic
+                    if self._backward_recommendation_count >= 3:
+                        next_pending = self._find_next_pending_topic(items)
+                        if next_pending is not None:
+                            next_item = items[next_pending]
+                            logger.info(
+                                f"LLM repeatedly recommending completed topics "
+                                f"(x{self._backward_recommendation_count}), "
+                                f"advancing to next pending topic {next_pending}: "
+                                f"'{next_item.get('title')}'"
+                            )
+                            self._backward_recommendation_count = 0
+                            self._last_backward_topic_id = None
+                            await self._execute_transition(
+                                next_pending,
+                                reason="repeated_backward_recommendations"
+                            )
+                            return
                 return
+
+            # Reset backward tracking on successful forward transition
+            self._backward_recommendation_count = 0
+            self._last_backward_topic_id = None
 
             # Execute the transition - trust the LLM
             logger.info(
@@ -467,6 +558,7 @@ class AgendaTracker:
                 new_topic_index = result.get("new_topic_index")
                 reasoning = result.get("reasoning", "")
                 current_focus = result.get("current_focus", "")
+                is_meeting_ending = result.get("is_meeting_ending", False)
 
                 # If LLM gave index but not ID, try to find ID
                 if should_transition and not new_topic_id and new_topic_index is not None:
@@ -479,6 +571,7 @@ class AgendaTracker:
                     confidence=1.0,  # Trust the LLM - no confidence game
                     reason=reasoning,
                     evidence=current_focus,
+                    is_meeting_ending=is_meeting_ending,
                 )
 
             return None
@@ -628,6 +721,13 @@ class AgendaTracker:
 
         return -1
 
+    def _find_next_pending_topic(self, items: List[Dict[str, Any]]) -> Optional[int]:
+        """Find the next pending topic after the current one."""
+        for i in range(self.current_item_index + 1, len(items)):
+            if items[i].get("status") == "pending":
+                return i
+        return None
+
     # =========================================================================
     # Topic Transitions - Simple, Trust-Based
     # =========================================================================
@@ -701,6 +801,11 @@ class AgendaTracker:
         self.is_meeting_ended = True
         logger.info(f"Meeting ended for room {self.room_id}")
 
+        # Cancel any pending analysis to prevent race conditions
+        if self.scheduled_task and not self.scheduled_task.done():
+            self.scheduled_task.cancel()
+            logger.debug("Cancelled pending analysis task")
+
         # Complete current topic if any
         if self.current_item_index >= 0 and self.agenda:
             items = self.agenda.get("items", [])
@@ -718,9 +823,11 @@ class AgendaTracker:
                 if item.get("status") == "pending":
                     await self._skip_topic(i, reason="meeting_ended")
 
-        # Update database
+        # Update database and local state
         if self.agenda:
             await self.db.end_meeting(self.agenda["id"])
+            # Update local agenda status to prevent any further processing
+            self.agenda["status"] = "completed"
 
         # Publish meeting_ended event
         await self._publish_event(MeetingEndedEvent())
