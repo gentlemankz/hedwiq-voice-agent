@@ -34,19 +34,20 @@ Document API → PersistentDocumentStore → HybridRetriever (BM25 + Embeddings 
 Supabase Storage (downloads PDF from frontend uploads)
 
                       ↓
-            AgendaTracker (Phase 4 Pipeline):
-                [Transcript Buffer] → [LLM Context Analysis] → [Stability Check]
-                   (debounced)           (~500ms)              (hysteresis)
+            AgendaTracker (Phase 4 - Trust-Based LLM):
+                [Full Transcript Buffer] → [LLM Full Context Analysis] → [Execute Transition]
+                     (all entries)              (~500ms)                   (trust LLM)
                       ↓
                hedwiq.agenda topic (topic_started, topic_completed, etc.)
 ```
 
-### Agenda Detection Flow (Phase 4)
+### Agenda Detection Flow (Phase 4 - Trust-Based LLM)
 ```
-Transcript → Buffer (3+ segments) → Pure LLM Analysis → Stability Check → Publish Event
-                                        ↓
-                        No word patterns - LLM analyzes conversation context
-                        to determine which agenda topic is being discussed
+Transcript → Full Buffer → LLM Full Context Analysis → Execute Transition
+                                    ↓
+                    Give LLM FULL conversation history
+                    Ask: "Has speaker MOVED ON to new topic?"
+                    Trust LLM decision - no artificial constraints
 ```
 
 **IMPORTANT**: Agent uses `request_fnc` to set identity prefix to "hedwiq" (required for frontend event filtering). Do NOT use `agent_name` in WorkerOptions - that disables automatic dispatch!
@@ -63,7 +64,7 @@ Frontend PreJoin → Supabase Storage → POST /documents/process → Agent proc
 | File | Purpose |
 |------|---------|
 | `hedwiq_agent.py` | Main agent: STT + LLM insights + document reference + agenda |
-| `agenda_tracker.py` | Phase 4: Pure LLM topic detection + stability + late joiner sync |
+| `agenda_tracker.py` | Phase 4: Trust-based LLM topic detection + late joiner sync |
 | `hybrid_retriever.py` | BM25 + embedding search with RRF fusion (~20ms) |
 | `document_referencer.py` | Phase 3: Pre-filter + Retrieval + LLM alignment + Dedupe |
 | `document_api.py` | FastAPI for document upload + Supabase processing |
@@ -99,28 +100,33 @@ Required in `.env`:
 - `MAX_CONCURRENT_ALIGNMENTS = 3` - Backpressure limit
 - `DEDUPE_TTL_MINUTES = 5` - Reference deduplication TTL
 
-### Agenda Tracking (Phase 4 - Revised v2)
-- `STABILITY_CONSECUTIVE_K = 2` - Consecutive predictions needed before transition
-- `STABILITY_TIME_THRESHOLD = 4.0` - Seconds of consistent prediction needed
-- `SWITCH_CONFIDENCE_THRESHOLD = 0.80` - Minimum LLM confidence for topic switch
-- `HYSTERESIS_COOLDOWN = 5.0` - Minimum seconds between topic switches
-- `MIN_TIME_ON_TOPIC = 15.0` - **NEW**: Minimum seconds on current topic before allowing transition
-- `MIN_ANALYSIS_INTERVAL = 2.0` - Minimum seconds between LLM analyses
-- `ANALYSIS_DEBOUNCE_SECONDS = 1.5` - Debounce delay before analysis
-- `MIN_SEGMENT_WORDS_FOR_DETECTION = 5` - Minimum words to trigger analysis
+### Agenda Tracking (Phase 4 - Trust-Based LLM Architecture)
 
-**Topic Detection Flow (Revised v2)**:
-1. LLM explicitly asked if topic should transition with `should_transition` flag
-2. **Critical distinction**: MENTIONS are NOT transitions - must have SUSTAINED DISCUSSION
-3. Minimum 15 seconds on current topic before transitions allowed
-4. Requires 2 consecutive predictions OR 4 seconds of consistent prediction
-5. Recent transcript segments marked with `(RECENT)` to help LLM focus
-6. Very high confidence (≥0.90) can bypass stability after min time met
+**Philosophy**: Modern LLMs are intelligent enough to understand conversation context.
+Instead of adding "magic constants" that second-guess the LLM, we give it full
+conversation history and trust its judgment.
 
-**Transition Requirements**:
+**Minimal Constants (for performance only)**:
+- `MIN_ANALYSIS_INTERVAL = 1.5` - Rate limiting between LLM analyses
+- `ANALYSIS_DEBOUNCE_SECONDS = 1.0` - Debounce delay to batch transcript segments
+- `MAX_TRANSCRIPT_BUFFER = 100` - Maximum transcript entries (soft limit for context)
+- `MIN_SEGMENT_WORDS_FOR_DETECTION = 3` - Skip very short utterances ("um", "uh")
+
+**REMOVED (no longer used)**:
+- ~~STABILITY_CONSECUTIVE_K~~ - No stability checks
+- ~~SWITCH_CONFIDENCE_THRESHOLD~~ - No confidence thresholds
+- ~~HYSTERESIS_COOLDOWN~~ - No artificial cooldowns
+- ~~MIN_TIME_ON_TOPIC~~ - No minimum time constraints
+
+**Topic Detection Flow (Trust-Based)**:
+1. Give LLM FULL conversation transcript (not just recent segments)
+2. Ask: "Has speaker intentionally MOVED ON to discussing a new topic?"
+3. Key distinction: MENTIONS ≠ TRANSITIONS (listing topics vs discussing them)
+4. Trust LLM's decision - if it says transition, we transition
+5. No confidence thresholds, no stability checks, no magic constants
+
+**Transition Guidance (in LLM prompt)**:
 - Speaker must be EXPLAINING/ELABORATING on new topic (not just mentioning it)
-- Multiple sentences actually ABOUT the new topic content required
 - "Today we'll discuss X, Y, Z" = stays on current topic (just listing)
 - "Let me explain how X works..." = potential transition (actual discussion)
-
-**Note**: Word-based patterns are DEPRECATED. All detection uses pure LLM context analysis.
+- LLM sees full context and makes intelligent decision

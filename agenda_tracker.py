@@ -1,23 +1,28 @@
 """
-Agenda Tracker for Hedwiq Agent - Phase 4 Implementation (Revised)
+Agenda Tracker for Hedwiq Agent - Phase 4 Implementation (Trust-Based LLM)
 
 Provides real-time agenda topic detection and progress tracking.
 Analyzes transcripts using LLM to understand conversation context and
 detect when discussion moves between agenda topics.
 
-ARCHITECTURE CHANGE (Post-Review):
-- Removed all word-based pattern matching (meetings are unpredictable)
-- Pure LLM-based context analysis for topic detection
-- No "meeting start" gate - analyze all transcripts
-- Automatic first topic start when agenda is active
+NEW ARCHITECTURE (Trust the LLM):
+- Full conversation context given to LLM (not just recent segments)
+- No magic constants, confidence thresholds, or stability checks
+- LLM decides if speaker has "moved on" to new topic (not keyword matching)
+- Trust the LLM's intelligence to understand conversation flow
+
+Philosophy:
+    Modern LLMs (GPT-4, Claude, etc.) are intelligent enough to understand
+    conversation context. Instead of adding "magic constants" that second-guess
+    the LLM, we give it full conversation history and trust its judgment.
 
 Pipeline:
-    [Transcript] -> [Pre-filter] -> [LLM Analysis] -> [Stability Check] -> [Publish]
-                     (word count)      (~500ms)         (hysteresis)
+    [Transcript] -> [Buffer] -> [LLM Full Context Analysis] -> [Execute Transition]
+                    (all entries)        (~500ms)                 (trust LLM)
 
 Key Features:
-- Pure LLM topic detection (no word patterns)
-- Stability/hysteresis to prevent thrashing
+- Pure LLM topic detection with FULL conversation context
+- No stability checks, no hysteresis, no confidence thresholds
 - Participant attributes for late joiner sync
 - Graceful degradation on LLM failures
 - Automatic first topic start for active agendas
@@ -50,27 +55,21 @@ from schemas.agenda import (
     MeetingEndedEvent,
     AgendaSyncEvent,
     AgendaStateAttribute,
-    StabilityState,
     TopicDetectionResult,
     AGENDA_TOPIC,
-    STABILITY_CONSECUTIVE_K,
-    STABILITY_TIME_THRESHOLD,
-    SWITCH_CONFIDENCE_THRESHOLD,
-    HYSTERESIS_COOLDOWN,
-    MIN_TIME_ON_TOPIC,
     MIN_ANALYSIS_INTERVAL,
     ANALYSIS_DEBOUNCE_SECONDS,
     MAX_TRANSCRIPT_BUFFER,
     MIN_SEGMENT_WORDS_FOR_DETECTION,
 )
 from prompts.agenda_detection import (
-    format_unified_topic_detection_prompt,
+    format_smart_topic_detection_prompt,
     validate_llm_response,
     DETECTION_TIMEOUT_SECONDS,
     DETECTION_MAX_RETRIES,
     DETECTION_TEMPERATURE,
     DETECTION_MAX_TOKENS,
-    UNIFIED_DETECTION_REQUIRED_FIELDS,
+    SMART_DETECTION_REQUIRED_FIELDS,
 )
 from insight_analyzer import TranscriptEntry
 
@@ -100,15 +99,12 @@ class AgendaTracker:
     current_item_index: int = -1  # -1 = not started
     is_meeting_started: bool = False
     is_meeting_ended: bool = False
-    current_topic_started_at: float = 0.0  # When current topic started (for min time check)
 
-    # Transcript buffer
+    # Full transcript buffer - stores COMPLETE conversation for context
+    # This is the key change: we give LLM full history, not just recent segments
     transcript_buffer: List[TranscriptEntry] = field(default_factory=list)
 
-    # Stability tracking
-    stability: StabilityState = field(default_factory=StabilityState)
-
-    # Analysis control
+    # Analysis control (minimal - just for rate limiting)
     analysis_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     last_analysis_time: float = 0
     scheduled_task: Optional[asyncio.Task] = None
@@ -125,7 +121,6 @@ class AgendaTracker:
         self.analysis_lock = asyncio.Lock()
         self.schedule_lock = asyncio.Lock()
         self.transcript_buffer = []
-        self.stability = StabilityState()
 
     async def start(self):
         """
@@ -320,18 +315,23 @@ class AgendaTracker:
 
     def _build_transcript_text(self) -> str:
         """
-        Build combined transcript text from buffer with emphasis on recent speech.
+        Build FULL conversation transcript from buffer.
 
-        REVISED: Now includes markers for recent vs older content to help the LLM
-        focus on the most recent discussion when detecting topic transitions.
+        NEW ARCHITECTURE: We give the LLM the complete conversation history,
+        not just recent segments. This allows the LLM to understand:
+        - The overall flow of the meeting
+        - What topics have been discussed vs mentioned
+        - The natural progression of the conversation
+
+        The LLM is smart enough to focus on what's relevant.
         """
-        # Use more entries for context (up to 20)
-        entries = self.transcript_buffer[-20:]
+        # Use ALL entries - LLM needs full context
+        entries = self.transcript_buffer
 
         if not entries:
             return ""
 
-        # Merge adjacent same-speaker entries
+        # Merge adjacent same-speaker entries for cleaner transcript
         merged = []
         for entry in entries:
             if merged and merged[-1]["identity"] == entry.speaker_identity:
@@ -344,19 +344,11 @@ class AgendaTracker:
                     "segment_id": entry.segment_id,
                 })
 
-        # Build output with recency markers
+        # Build clean transcript without artificial markers
+        # LLM can figure out what's recent from context
         lines = []
-        total_turns = len(merged)
-
-        # Mark the last few turns as "RECENT" to help LLM focus
-        recent_threshold = max(1, total_turns - 3)  # Last 3 turns are "recent"
-
-        for i, turn in enumerate(merged):
-            if i >= recent_threshold:
-                # Recent turns - mark them for emphasis
-                lines.append(f"[{turn['name']}] (RECENT): {turn['text']}")
-            else:
-                lines.append(f"[{turn['name']}]: {turn['text']}")
+        for turn in merged:
+            lines.append(f"[{turn['name']}]: {turn['text']}")
 
         return "\n".join(lines)
 
@@ -368,9 +360,11 @@ class AgendaTracker:
         """
         Use LLM to analyze transcript and detect topic transitions.
 
-        REVISED: Now uses the `should_transition` flag from LLM response
-        instead of just comparing topic IDs. This allows the LLM to explicitly
-        recommend transitions based on conversation context.
+        NEW ARCHITECTURE: Trust the LLM completely.
+        - Give it full conversation context
+        - Ask if speaker has moved to a new topic
+        - If LLM says yes, execute the transition
+        - No confidence thresholds, no stability checks
         """
         if not self.agenda or self.is_meeting_ended:
             return
@@ -384,29 +378,29 @@ class AgendaTracker:
         if 0 <= self.current_item_index < len(items):
             current_item = items[self.current_item_index]
 
-        # Call LLM with all agenda items and current transcript
-        result = await self._llm_unified_detection(
+        # Call LLM with full conversation context
+        result = await self._llm_smart_detection(
             all_items=items,
             current_item=current_item,
             current_index=self.current_item_index,
-            transcript_text=transcript_text
+            full_transcript=transcript_text
         )
 
         if not result:
             logger.debug("LLM returned no detection result")
             return
 
-        # Log the result with transition flag
+        # Log the result
         logger.info(
-            f"LLM detection: should_transition={result.has_transitioned}, "
-            f"topic_id={result.next_topic_id}, confidence={result.confidence:.2f}, "
-            f"reason={result.reason}"
+            f"LLM analysis: should_transition={result.has_transitioned}, "
+            f"new_topic_id={result.next_topic_id}, "
+            f"reasoning={result.reason}"
         )
 
-        # Check if LLM explicitly recommends a transition
-        if result.has_transitioned and result.confidence >= SWITCH_CONFIDENCE_THRESHOLD:
+        # Trust the LLM's decision - if it says transition, we transition
+        if result.has_transitioned:
             if not result.next_topic_id:
-                logger.warning("LLM recommended transition but no topic_id provided")
+                logger.warning("LLM recommended transition but no new_topic_id provided")
                 return
 
             detected_idx = self._find_item_index(result.next_topic_id)
@@ -415,9 +409,9 @@ class AgendaTracker:
                 logger.warning(f"LLM returned unknown topic_id: {result.next_topic_id}")
                 return
 
-            # Validate the transition makes sense
+            # Basic validation only
             if detected_idx == self.current_item_index:
-                logger.debug(f"LLM recommended transition to current topic (idx={detected_idx}), ignoring")
+                logger.debug(f"LLM recommended current topic (idx={detected_idx}), staying")
                 return
 
             # Check if target topic is already completed/skipped
@@ -426,90 +420,71 @@ class AgendaTracker:
                 logger.info(f"LLM recommended topic {detected_idx} but it's already {target_item.get('status')}")
                 return
 
-            # Attempt the transition
+            # Execute the transition - trust the LLM
             logger.info(
-                f"LLM recommends transition: {self.current_item_index} -> {detected_idx} "
-                f"(evidence: {result.evidence or 'none'})"
+                f"TRANSITION: {self.current_item_index} -> {detected_idx} "
+                f"(reason: {result.reason})"
             )
-            await self._try_transition(
+            await self._execute_transition(
                 detected_idx,
-                confidence=result.confidence,
-                reason=result.reason or "llm_transition_detection"
+                reason=result.reason or "llm_detected_transition"
             )
         else:
-            # No transition recommended
-            if result.has_transitioned and result.confidence < SWITCH_CONFIDENCE_THRESHOLD:
-                logger.debug(
-                    f"LLM suggested transition but confidence too low "
-                    f"({result.confidence:.2f} < {SWITCH_CONFIDENCE_THRESHOLD})"
-                )
-            else:
-                logger.debug(f"LLM confirmed current topic (idx={self.current_item_index})")
+            logger.debug(f"LLM: staying on topic {self.current_item_index} - {result.reason}")
 
-    async def _llm_unified_detection(
+    async def _llm_smart_detection(
         self,
         all_items: List[Dict[str, Any]],
         current_item: Optional[Dict[str, Any]],
         current_index: int,
-        transcript_text: str
+        full_transcript: str
     ) -> Optional[TopicDetectionResult]:
         """
-        Use LLM to detect if a topic transition should occur.
+        Use LLM to detect topic transitions with full conversation context.
 
-        REVISED: Now explicitly asks LLM whether to transition, not just which topic matches.
-        The LLM compares current topic vs other topics and recommends transitions.
-
-        Returns:
-            TopicDetectionResult with:
-            - has_transitioned: True if LLM recommends switching topics
-            - next_topic_id: The topic ID to switch to (if transitioning)
-            - confidence: How confident the LLM is in its recommendation
-            - reason: Explanation for the decision
+        NEW ARCHITECTURE: Simple, trusting approach.
+        - Give LLM full conversation
+        - Ask if speaker has moved to new topic
+        - Trust the response without artificial constraints
         """
         try:
-            system_prompt, user_prompt = format_unified_topic_detection_prompt(
+            system_prompt, user_prompt = format_smart_topic_detection_prompt(
                 all_items=all_items,
                 current_item=current_item,
                 current_index=current_index,
-                transcript_text=transcript_text
+                full_transcript=full_transcript
             )
 
             result = await self._call_llm(
                 system_prompt, user_prompt,
-                required_fields=UNIFIED_DETECTION_REQUIRED_FIELDS
+                required_fields=SMART_DETECTION_REQUIRED_FIELDS
             )
 
             if result:
-                # Extract the new response format
+                # Extract simple response
                 should_transition = result.get("should_transition", False)
-                recommended_topic_id = result.get("recommended_topic_id")
-                confidence = float(result.get("confidence", 0))
-                reason = result.get("reason", "")
-                transition_signal = result.get("transition_signal", "")
+                new_topic_id = result.get("new_topic_id")
+                new_topic_index = result.get("new_topic_index")
+                reasoning = result.get("reasoning", "")
+                current_focus = result.get("current_focus", "")
 
-                # Log match scores if provided (for debugging)
-                match_scores = result.get("match_scores", {})
-                if match_scores:
-                    logger.debug(
-                        f"Match scores - current: {match_scores.get('current_topic', 'N/A')}, "
-                        f"recommended: {match_scores.get('recommended_topic', 'N/A')}"
-                    )
-
-                # Build evidence string from transition_signal
-                evidence = transition_signal if transition_signal != "none" else None
+                # If LLM gave index but not ID, try to find ID
+                if should_transition and not new_topic_id and new_topic_index is not None:
+                    if 0 <= new_topic_index < len(all_items):
+                        new_topic_id = all_items[new_topic_index].get("id")
 
                 return TopicDetectionResult(
                     has_transitioned=should_transition,
-                    next_topic_id=recommended_topic_id,
-                    confidence=confidence,
-                    reason=reason,
-                    evidence=evidence,
+                    next_topic_id=new_topic_id,
+                    confidence=1.0,  # Trust the LLM - no confidence game
+                    reason=reasoning,
+                    evidence=current_focus,
                 )
 
             return None
 
         except Exception as e:
-            logger.warning(f"LLM unified detection failed: {e}")
+            logger.warning(f"LLM smart detection failed: {e}")
             return None
 
     async def _call_llm(
@@ -654,20 +629,19 @@ class AgendaTracker:
         return -1
 
     # =========================================================================
-    # Stability / Hysteresis
+    # Topic Transitions - Simple, Trust-Based
     # =========================================================================
 
-    async def _try_transition(
+    async def _execute_transition(
         self,
         next_item_idx: int,
-        confidence: float,
         reason: str
     ):
         """
-        Try to transition to a new topic with stability checks.
+        Execute a topic transition.
 
-        REVISED: Added minimum time on topic check to prevent transitioning
-        away from a topic that was just started.
+        NEW ARCHITECTURE: No stability checks, no hysteresis, no confidence games.
+        If the LLM says transition, we transition.
         """
         if not self.agenda:
             return
@@ -676,67 +650,15 @@ class AgendaTracker:
         if next_item_idx >= len(items):
             return
 
-        next_item = items[next_item_idx]
-        next_item_id = next_item.get("id")
-
-        now = time.time()
-
-        # CHECK 1: Minimum time on current topic
-        # Don't switch away from a topic that was just started
-        if self.current_topic_started_at > 0:
-            time_on_current_topic = now - self.current_topic_started_at
-            if time_on_current_topic < MIN_TIME_ON_TOPIC:
-                logger.info(
-                    f"Minimum time on topic not met ({time_on_current_topic:.1f}s < {MIN_TIME_ON_TOPIC}s), "
-                    f"skipping transition to topic {next_item_idx}"
-                )
-                return
-
-        # CHECK 2: Hysteresis cooldown between switches
-        if now - self.stability.last_switch_time < HYSTERESIS_COOLDOWN:
-            logger.info(
-                f"Hysteresis cooldown active ({HYSTERESIS_COOLDOWN}s), "
-                f"skipping transition (confidence={confidence:.2f})"
-            )
-            return
-
-        # CHECK 3: Confidence threshold
-        if confidence < SWITCH_CONFIDENCE_THRESHOLD:
-            logger.info(f"Confidence {confidence:.2f} below threshold {SWITCH_CONFIDENCE_THRESHOLD}, skipping")
-            return
-
-        # CHECK 4: Stability - require consistent predictions
-        if next_item_id == self.stability.last_predicted_topic:
-            self.stability.consecutive_predictions += 1
-        else:
-            self.stability.consecutive_predictions = 1
-            self.stability.first_prediction_time = now
-            self.stability.last_predicted_topic = next_item_id
-
-        time_stable = (now - self.stability.first_prediction_time) >= STABILITY_TIME_THRESHOLD
-        count_stable = self.stability.consecutive_predictions >= STABILITY_CONSECUTIVE_K
-
-        # Very high confidence (>=0.90) can bypass stability if time on topic is sufficient
-        high_confidence_bypass = confidence >= 0.90 and (now - self.current_topic_started_at) >= MIN_TIME_ON_TOPIC
-
-        if not (time_stable or count_stable or high_confidence_bypass):
-            logger.info(
-                f"Stability check pending: consecutive={self.stability.consecutive_predictions}/{STABILITY_CONSECUTIVE_K}, "
-                f"time_stable={time_stable}, confidence={confidence:.2f}"
-            )
-            return
-
-        # All checks passed - commit the transition
         logger.info(
-            f"TOPIC TRANSITION: {self.current_item_index} -> {next_item_idx} "
-            f"(confidence={confidence:.2f}, reason={reason})"
+            f"EXECUTING TRANSITION: {self.current_item_index} -> {next_item_idx} "
+            f"(reason: {reason})"
         )
 
         # Complete current topic if any
         if self.current_item_index >= 0:
             await self._complete_topic(
                 self.current_item_index,
-                confidence=confidence,
                 reason=reason
             )
 
@@ -746,12 +668,7 @@ class AgendaTracker:
                 await self._skip_topic(i, reason="skipped_in_transition")
 
         # Start new topic
-        await self._start_topic(next_item_idx, confidence=confidence, reason=reason)
-
-        # Update stability tracking
-        self.stability.last_switch_time = now
-        self.stability.consecutive_predictions = 0
-        self.stability.last_predicted_topic = None
+        await self._start_topic(next_item_idx, reason=reason)
 
     # =========================================================================
     # Meeting Lifecycle
@@ -774,7 +691,7 @@ class AgendaTracker:
 
         # Start first topic automatically
         if self.agenda and self.agenda.get("items"):
-            await self._start_topic(0, confidence=1.0, reason="meeting_auto_start")
+            await self._start_topic(0, reason="meeting_auto_start")
 
     async def _handle_meeting_end(self):
         """Handle meeting end - publish event and mark remaining items."""
@@ -792,7 +709,6 @@ class AgendaTracker:
                 if current_item.get("status") == "in_progress":
                     await self._complete_topic(
                         self.current_item_index,
-                        confidence=0.8,
                         reason="meeting_end"
                     )
 
@@ -819,7 +735,6 @@ class AgendaTracker:
     async def _start_topic(
         self,
         item_idx: int,
-        confidence: float,
         reason: str
     ):
         """Start a topic and publish event."""
@@ -840,7 +755,6 @@ class AgendaTracker:
 
         # Update local state
         self.current_item_index = item_idx
-        self.current_topic_started_at = time.time()  # Track when topic started for min time check
         item["status"] = "in_progress"
         item["startedAt"] = start_time_iso
         item["startTranscriptRef"] = transcript_ref
@@ -854,7 +768,7 @@ class AgendaTracker:
             item_id=item_id,
             item_index=item_idx,
             transcript_ref=transcript_ref,
-            confidence=confidence,
+            confidence=1.0,  # Trust-based - always confident
         )
         await self._publish_event(event)
 
@@ -866,7 +780,6 @@ class AgendaTracker:
     async def _complete_topic(
         self,
         item_idx: int,
-        confidence: float,
         reason: str
     ):
         """Complete a topic and publish event."""
@@ -910,7 +823,7 @@ class AgendaTracker:
             item_id=item_id,
             item_index=item_idx,
             transcript_ref=transcript_ref,
-            confidence=confidence,
+            confidence=1.0,  # Trust-based - always confident
             actual_duration=actual_duration,
         )
         await self._publish_event(event)

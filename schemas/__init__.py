@@ -41,16 +41,12 @@ from .agenda import (
     TopicDetectionResult,
     AGENDA_TOPIC,
     AGENT_IDENTITY_PREFIX,
-    STABILITY_CONSECUTIVE_K,
-    STABILITY_TIME_THRESHOLD,
-    SWITCH_CONFIDENCE_THRESHOLD,
-    HYSTERESIS_COOLDOWN,
+    # Trust-based LLM architecture - minimal constants for performance only
     MIN_ANALYSIS_INTERVAL,
     ANALYSIS_DEBOUNCE_SECONDS,
     MAX_TRANSCRIPT_BUFFER,
     MIN_SEGMENT_WORDS_FOR_DETECTION,
-    extract_keywords,  # FIX (R1+R2): Export consolidated function
-    # OFF_AGENDA constants removed - feature not implemented (R1+R2)
+    extract_keywords,
 )
 
 __all__ = [
@@ -94,14 +90,10 @@ __all__ = [
     "TopicDetectionResult",
     "AGENDA_TOPIC",
     "AGENT_IDENTITY_PREFIX",
-    "STABILITY_CONSECUTIVE_K",
-    "STABILITY_TIME_THRESHOLD",
-    "SWITCH_CONFIDENCE_THRESHOLD",
-    "HYSTERESIS_COOLDOWN",
+    # Trust-based LLM architecture - minimal constants for performance only
     "MIN_ANALYSIS_INTERVAL",
     "ANALYSIS_DEBOUNCE_SECONDS",
     "MAX_TRANSCRIPT_BUFFER",
     "MIN_SEGMENT_WORDS_FOR_DETECTION",
     "extract_keywords",
-    # OFF_AGENDA constants removed - feature not implemented (R1+R2)
 ]

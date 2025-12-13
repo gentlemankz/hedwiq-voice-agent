@@ -326,24 +326,38 @@ AGENDA_TOPIC = "hedwiq.agenda"
 # Agent identity prefix (must match frontend constant)
 AGENT_IDENTITY_PREFIX = "hedwiq"
 
-# Stability/Hysteresis parameters for topic detection
-# REVISED: Balance between responsiveness and avoiding false transitions
-STABILITY_CONSECUTIVE_K = 2       # Require K consecutive predictions (increased to avoid single-shot transitions)
-STABILITY_TIME_THRESHOLD = 4.0    # OR require T seconds of consistent prediction
-SWITCH_CONFIDENCE_THRESHOLD = 0.80  # Minimum confidence to consider a switch (increased from 0.70)
-HYSTERESIS_COOLDOWN = 5.0         # Minimum seconds between topic switches
-MIN_TIME_ON_TOPIC = 15.0          # Minimum seconds on current topic before allowing transition (NEW)
+# ============================================================================
+# NEW ARCHITECTURE: Trust the LLM
+# ============================================================================
+#
+# Philosophy: Modern LLMs (GPT-4, Claude, etc.) are intelligent enough to
+# understand conversation context. Instead of adding "magic constants" that
+# second-guess the LLM, we give it full conversation history and trust its
+# judgment.
+#
+# Old approach (REMOVED):
+#   - STABILITY_CONSECUTIVE_K: Required N consecutive predictions
+#   - STABILITY_TIME_THRESHOLD: Required N seconds of consistent prediction
+#   - SWITCH_CONFIDENCE_THRESHOLD: Arbitrary confidence cutoff
+#   - HYSTERESIS_COOLDOWN: Forced delay between switches
+#   - MIN_TIME_ON_TOPIC: Minimum time before allowing transition
+#
+# New approach:
+#   - Give LLM full conversation transcript (not just recent segments)
+#   - Ask LLM to make intelligent transition decisions
+#   - Trust LLM's response without artificial constraints
+#   - No confidence thresholds, no stability checks, no cooldowns
+#
+# Future: Implement context compaction when transcript exceeds limit
+# ============================================================================
 
-# Analysis intervals
-MIN_ANALYSIS_INTERVAL = 2.0       # Minimum seconds between analysis runs
-ANALYSIS_DEBOUNCE_SECONDS = 1.5   # Debounce delay before analysis
-MAX_TRANSCRIPT_BUFFER = 25        # Maximum transcript entries to buffer
+# Analysis intervals (minimal, just for performance)
+MIN_ANALYSIS_INTERVAL = 1.5       # Minimum seconds between analysis runs (for rate limiting only)
+ANALYSIS_DEBOUNCE_SECONDS = 1.0   # Debounce delay before analysis (to batch transcript segments)
 
-# Pre-filter thresholds
-MIN_SEGMENT_WORDS_FOR_DETECTION = 5  # Minimum words to consider for topic detection (increased)
+# Transcript buffer - store FULL conversation for context
+# This is a soft limit; we give LLM as much context as possible
+MAX_TRANSCRIPT_BUFFER = 100       # Maximum transcript entries to buffer (increased significantly)
 
-# NOTE: Off-agenda detection constants removed (R1+R2)
-# Feature was defined in plan but not implemented in Phase 4.
-# If implementing in future, add:
-# OFF_AGENDA_PERSIST_THRESHOLD = 120.0  # 2 minutes of off-agenda before flagging
-# OFF_AGENDA_HIGH_CONFIDENCE = 0.85     # High confidence needed to mark off-agenda
+# Pre-filter: only skip very short utterances (like "um", "uh")
+MIN_SEGMENT_WORDS_FOR_DETECTION = 3  # Minimum words to trigger analysis
