@@ -802,7 +802,9 @@ class AgendaTracker:
         logger.info(f"Meeting ended for room {self.room_id}")
 
         # Cancel any pending analysis to prevent race conditions
-        if self.scheduled_task and not self.scheduled_task.done():
+        # BUT don't cancel if we're currently running inside that task (would cancel ourselves!)
+        current_task = asyncio.current_task()
+        if self.scheduled_task and not self.scheduled_task.done() and self.scheduled_task != current_task:
             self.scheduled_task.cancel()
             logger.debug("Cancelled pending analysis task")
 
@@ -1035,9 +1037,14 @@ class AgendaTracker:
                 if item.get("status") in ("completed", "skipped")
             ]
 
+            # Only include current_id if the item is actually in_progress
+            # This prevents the bug where a completed item is reported as "current"
+            # which causes frontend late joiner sync to overwrite completed status
             current_id = None
             if 0 <= self.current_item_index < len(self.agenda.get("items", [])):
-                current_id = self.agenda["items"][self.current_item_index].get("id")
+                current_item = self.agenda["items"][self.current_item_index]
+                if current_item.get("status") == "in_progress":
+                    current_id = current_item.get("id")
 
             state = AgendaStateAttribute(
                 v=self.agenda.get("version", 1),
