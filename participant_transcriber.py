@@ -4,6 +4,9 @@ Keeps audio→text flow modular and reusable.
 
 Phase 1 (Real-Time Actions) Addition:
 - Added action_classifier parameter to feed transcript context for classification
+
+Phase 3 (Real-Time Actions) Addition:
+- Added email_draft_generator parameter to feed transcript context for draft generation
 """
 
 import asyncio
@@ -17,11 +20,12 @@ from livekit.agents import stt
 from insight_analyzer import TranscriptEntry, InsightAnalyzer
 from document_referencer import DocumentReferencer
 
-# Type hint import for agenda tracker and action classifier (avoids circular import)
+# Type hint import for agenda tracker, action classifier, and email draft generator (avoids circular import)
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from agenda_tracker import AgendaTracker
     from action_classifier import ActionClassifier
+    from email_draft_generator import EmailDraftGenerator
 
 logger = logging.getLogger("hedwiq-agent")
 
@@ -39,6 +43,7 @@ class ParticipantTranscriber:
         document_referencer: Optional[DocumentReferencer] = None,
         agenda_tracker: Optional["AgendaTracker"] = None,
         action_classifier: Optional["ActionClassifier"] = None,
+        email_draft_generator: Optional["EmailDraftGenerator"] = None,
         transcription_topic: str = "lk.transcription",
     ):
         self.room = room
@@ -49,6 +54,7 @@ class ParticipantTranscriber:
         self.document_referencer = document_referencer
         self.agenda_tracker = agenda_tracker
         self.action_classifier = action_classifier
+        self.email_draft_generator = email_draft_generator
         self.transcription_topic = transcription_topic
         self._task: Optional[asyncio.Task] = None
         self._segment_counter = 0
@@ -140,6 +146,10 @@ class ParticipantTranscriber:
                             # Phase 1 (Real-Time Actions): Feed transcript to action classifier for context
                             if self.action_classifier:
                                 await self.action_classifier.add_transcript(entry)
+
+                            # Phase 3 (Real-Time Actions): Feed transcript to email draft generator for context
+                            if self.email_draft_generator:
+                                await self.email_draft_generator.add_transcript(entry)
 
                             current_segment_id = None
                             self._segment_start_time = None

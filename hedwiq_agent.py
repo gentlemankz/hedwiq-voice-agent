@@ -54,6 +54,9 @@ from agenda_tracker import AgendaTracker
 # Action classification imports (Phase 1 of Real-Time Actions)
 from action_classifier import ActionClassifier
 
+# Email draft generation imports (Phase 3 of Real-Time Actions)
+from email_draft_generator import EmailDraftGenerator
+
 # Load environment variables
 load_dotenv(dotenv_path=Path(__file__).parent / ".env")
 
@@ -79,6 +82,7 @@ class HedwiqAgent:
     - DocumentReferencer: Real-time document reference detection (Phase 3)
     - AgendaTracker: Automatic topic detection and progress tracking (Phase 4)
     - ActionClassifier: Action item classification for automation (Phase 1 of Real-Time Actions)
+    - EmailDraftGenerator: AI-generated email drafts from actions (Phase 3 of Real-Time Actions)
     """
 
     def __init__(
@@ -93,6 +97,7 @@ class HedwiqAgent:
         document_referencer: Optional[DocumentReferencer] = None,
         agenda_tracker: Optional[AgendaTracker] = None,
         action_classifier: Optional[ActionClassifier] = None,
+        email_draft_generator: Optional[EmailDraftGenerator] = None,
     ):
         self.room = room
         self.room_id = room_id or room.name
@@ -154,6 +159,20 @@ class HedwiqAgent:
         # When InsightAnalyzer publishes an action_item, it notifies ActionClassifier
         self.insight_analyzer.set_action_item_callback(
             self.action_classifier.on_action_item
+        )
+
+        # Initialize email draft generator (Phase 3 of Real-Time Actions)
+        # Generates AI-powered email drafts from email-type actions
+        self.email_draft_generator = email_draft_generator or EmailDraftGenerator(
+            room=room,
+            room_id=self.room_id,
+            llm=self.llm,
+        )
+
+        # Connect email draft generator to action classifier
+        # When ActionClassifier publishes an email-type action, it notifies EmailDraftGenerator
+        self.action_classifier.set_email_action_callback(
+            self.email_draft_generator.on_email_action
         )
 
         # Initialize document reference detection (Phase 3)
@@ -243,7 +262,7 @@ class HedwiqAgent:
                     await self._start_transcriber(participant, track_pub.track)
 
     async def stop(self):
-        """Stop all transcribers, document referencer, agenda tracker, and action classifier."""
+        """Stop all transcribers, document referencer, agenda tracker, action classifier, and email draft generator."""
         # Stop document referencer
         await self.document_referencer.stop()
 
@@ -252,6 +271,9 @@ class HedwiqAgent:
 
         # Stop action classifier (Phase 1 - Real-Time Actions)
         await self.action_classifier.shutdown()
+
+        # Stop email draft generator (Phase 3 - Real-Time Actions)
+        await self.email_draft_generator.shutdown()
 
         # Stop all transcribers
         for transcriber in self.transcribers.values():
@@ -346,9 +368,10 @@ class HedwiqAgent:
             track,
             self.stt,
             self.insight_analyzer,
-            self.document_referencer,  # Phase 3: Pass document referencer
-            self.agenda_tracker,       # Phase 4: Pass agenda tracker
-            self.action_classifier,    # Phase 1 (Real-Time Actions): Pass action classifier
+            self.document_referencer,      # Phase 3: Pass document referencer
+            self.agenda_tracker,           # Phase 4: Pass agenda tracker
+            self.action_classifier,        # Phase 1 (Real-Time Actions): Pass action classifier
+            self.email_draft_generator,    # Phase 3 (Real-Time Actions): Pass email draft generator
             transcription_topic=TRANSCRIPTION_TOPIC,
         )
         self.transcribers[key] = transcriber
@@ -372,6 +395,8 @@ async def entrypoint(ctx: JobContext):
     10. Publishes agenda events via hedwiq.agenda topic
     11. (Phase 1 Real-Time Actions) Classifies action items by execution type
     12. Publishes classified actions via hedwiq.action topic
+    13. (Phase 3 Real-Time Actions) Generates email drafts from email-type actions
+    14. Publishes email drafts via hedwiq.email_draft topic
     """
     logger.info(f"Hedwiq agent starting for room: {ctx.room.name}")
 

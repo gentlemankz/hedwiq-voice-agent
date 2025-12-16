@@ -113,6 +113,8 @@ class InsightAnalyzer:
 
     async def _delayed_analysis(self):
         await asyncio.sleep(ANALYSIS_DELAY)
+        # Note: InsightAnalyzer doesn't have a shutdown flag, but this pattern
+        # ensures consistency with other components if one is added
         await self._run_analysis()
 
     async def _run_analysis(self):
@@ -154,9 +156,14 @@ class InsightAnalyzer:
 
                 response_text = ""
                 stream = self.llm.chat(chat_ctx=chat_ctx)
-                async for chunk in stream:
-                    if chunk.delta and chunk.delta.content:
-                        response_text += chunk.delta.content
+                try:
+                    async for chunk in stream:
+                        if chunk.delta and chunk.delta.content:
+                            response_text += chunk.delta.content
+                finally:
+                    # Ensure stream resources are released
+                    if hasattr(stream, 'aclose'):
+                        await stream.aclose()
 
                 insights = self._parse_insights(response_text, speaker_map)
 

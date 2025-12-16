@@ -2,7 +2,7 @@
 Hedwiq Agent Prompts
 
 This module contains LLM prompts for insight extraction, analysis,
-document reference detection, and action classification.
+document reference detection, action classification, and email draft generation.
 """
 
 from .insight_extraction import (
@@ -33,6 +33,18 @@ from .action_classification import (
     CLASSIFICATION_MAX_RETRIES,
 )
 
+from .email_draft_generation import (
+    EMAIL_DRAFT_SYSTEM_PROMPT,
+    EMAIL_DRAFT_USER_TEMPLATE,
+    EMAIL_SCHEDULE_DRAFT_TEMPLATE,
+    EMAIL_SHARE_DRAFT_TEMPLATE,
+    format_email_draft_prompt,
+    DRAFT_GENERATION_TIMEOUT_SECONDS,
+    DRAFT_GENERATION_MAX_RETRIES,
+    MIN_DRAFT_CONFIDENCE,
+    HIGH_DRAFT_CONFIDENCE,
+)
+
 __all__ = [
     # Insight extraction
     "INSIGHT_EXTRACTION_SYSTEM_PROMPT",
@@ -56,4 +68,14 @@ __all__ = [
     "ACTION_HIGH_CONFIDENCE_THRESHOLD",
     "CLASSIFICATION_TIMEOUT_SECONDS",
     "CLASSIFICATION_MAX_RETRIES",
+    # Email draft generation (Phase 3 of Real-Time Actions)
+    "EMAIL_DRAFT_SYSTEM_PROMPT",
+    "EMAIL_DRAFT_USER_TEMPLATE",
+    "EMAIL_SCHEDULE_DRAFT_TEMPLATE",
+    "EMAIL_SHARE_DRAFT_TEMPLATE",
+    "format_email_draft_prompt",
+    "DRAFT_GENERATION_TIMEOUT_SECONDS",
+    "DRAFT_GENERATION_MAX_RETRIES",
+    "MIN_DRAFT_CONFIDENCE",
+    "HIGH_DRAFT_CONFIDENCE",
 ]

@@ -53,11 +53,25 @@ from .actions import (
     UrgencyLevel,
     ActionMetadata,
     ClassifiedAction,
+    EMAIL_ACTION_TYPES,
     MIN_CLASSIFICATION_CONFIDENCE,
     CLASSIFICATION_TIMEOUT_SECONDS,
     MAX_CONTEXT_TURNS,
     ACTION_TYPE_PATTERNS,
     ACTION_TYPE_ICONS,
+)
+from .email_draft import (
+    DraftStatus,
+    EmailRecipient,
+    MeetingContext,
+    EmailDraft,
+    DRAFT_GENERATION_TIMEOUT_SECONDS,
+    DRAFT_GENERATION_MAX_RETRIES,
+    MIN_DRAFT_CONFIDENCE,
+    MAX_TRANSCRIPT_CONTEXT_TURNS,
+    MAX_TRANSCRIPT_CONTEXT_CHARS,
+    MAX_CONCURRENT_GENERATIONS,
+    GENERATION_DEBOUNCE_SECONDS,
 )
 
 __all__ = [
@@ -112,9 +126,22 @@ __all__ = [
     "UrgencyLevel",
     "ActionMetadata",
     "ClassifiedAction",
+    "EMAIL_ACTION_TYPES",
     "MIN_CLASSIFICATION_CONFIDENCE",
     "CLASSIFICATION_TIMEOUT_SECONDS",
     "MAX_CONTEXT_TURNS",
     "ACTION_TYPE_PATTERNS",
     "ACTION_TYPE_ICONS",
+    # Email Drafts (Phase 3 of Real-Time Actions)
+    "DraftStatus",
+    "EmailRecipient",
+    "MeetingContext",
+    "EmailDraft",
+    "DRAFT_GENERATION_TIMEOUT_SECONDS",
+    "DRAFT_GENERATION_MAX_RETRIES",
+    "MIN_DRAFT_CONFIDENCE",
+    "MAX_TRANSCRIPT_CONTEXT_TURNS",
+    "MAX_TRANSCRIPT_CONTEXT_CHARS",
+    "MAX_CONCURRENT_GENERATIONS",
+    "GENERATION_DEBOUNCE_SECONDS",
 ]

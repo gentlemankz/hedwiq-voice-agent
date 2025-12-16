@@ -17,7 +17,7 @@ import logging
 import os
 import time
 from dataclasses import dataclass, field
-from typing import Deque, List, Optional, Dict, Any
+from typing import Deque, List, Optional, Dict, Any, Callable, Awaitable
 
 from livekit import rtc
 from livekit.agents import llm
@@ -27,6 +27,7 @@ from schemas.actions import (
     UrgencyLevel,
     ActionMetadata,
     ClassifiedAction,
+    EMAIL_ACTION_TYPES,
     MIN_CLASSIFICATION_CONFIDENCE,
     CLASSIFICATION_TIMEOUT_SECONDS,
 )
@@ -39,6 +40,9 @@ from insight_analyzer import TranscriptEntry
 from utils import clean_llm_json_response
 
 logger = logging.getLogger("hedwiq-action-classifier")
+
+# Type alias for email action callback
+EmailActionCallback = Callable[[ClassifiedAction], Awaitable[None]]
 
 # LiveKit topic for classified actions
 ACTION_TOPIC = "hedwiq.action"
@@ -61,10 +65,12 @@ class ActionClassifier:
     2. Classifies using LLM
     3. Extracts metadata (recipient, urgency, etc.)
     4. Publishes enriched action to hedwiq.action topic
+    5. (Phase 3) Notifies EmailDraftGenerator for email-type actions
 
     Integration:
     - InsightAnalyzer calls on_action_item() when it publishes an action_item
     - ActionClassifier maintains its own transcript buffer for context
+    - EmailDraftGenerator receives email-type actions via callback
 
     Publishing:
     - Topic: hedwiq.action
@@ -92,12 +98,16 @@ class ActionClassifier:
     schedule_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     scheduled_task: Optional[asyncio.Task] = None
 
+    # Phase 3 (Real-Time Actions): Callback for email draft generation
+    email_action_callback: Optional[EmailActionCallback] = None
+
     # Shutdown flag
     _shutdown: bool = False
 
     # Statistics
     total_classified: int = 0
     classification_errors: int = 0
+    email_actions_sent: int = 0
 
     def __post_init__(self):
         self.classification_lock = asyncio.Lock()
@@ -132,6 +142,17 @@ class ActionClassifier:
             api_version=api_version,
         )
 
+    def set_email_action_callback(self, callback: EmailActionCallback):
+        """
+        Set callback to be invoked when email-type actions are published.
+
+        Used by EmailDraftGenerator to receive email actions for draft generation.
+
+        Args:
+            callback: Async function(action: ClassifiedAction) -> None
+        """
+        self.email_action_callback = callback
+
     async def shutdown(self):
         """
         Gracefully shutdown the classifier.
@@ -155,7 +176,7 @@ class ActionClassifier:
 
         logger.info(
             f"ActionClassifier shutdown - classified: {self.total_classified}, "
-            f"errors: {self.classification_errors}"
+            f"errors: {self.classification_errors}, email_actions: {self.email_actions_sent}"
         )
 
     async def add_transcript(self, entry: TranscriptEntry):
@@ -218,6 +239,9 @@ class ActionClassifier:
     async def _delayed_classification(self):
         """Debounced classification to batch nearby actions."""
         await asyncio.sleep(CLASSIFICATION_DEBOUNCE)
+        # Check shutdown flag after sleep to avoid unnecessary work
+        if self._shutdown:
+            return
         await self._run_classification()
 
     async def _run_classification(self):
@@ -317,9 +341,14 @@ class ActionClassifier:
 
         response_text = ""
         stream = self.llm.chat(chat_ctx=chat_ctx)
-        async for chunk in stream:
-            if chunk.delta and chunk.delta.content:
-                response_text += chunk.delta.content
+        try:
+            async for chunk in stream:
+                if chunk.delta and chunk.delta.content:
+                    response_text += chunk.delta.content
+        finally:
+            # Ensure stream resources are released
+            if hasattr(stream, 'aclose'):
+                await stream.aclose()
 
         # Parse JSON response
         return self._parse_classification_response(response_text)
@@ -461,6 +490,15 @@ class ActionClassifier:
                 f"{action.content[:50]}... (confidence: {action.classification_confidence:.2f})"
             )
 
+            # Phase 3 (Real-Time Actions): Notify EmailDraftGenerator for email-type actions
+            if action.action_type in EMAIL_ACTION_TYPES and self.email_action_callback:
+                try:
+                    await self.email_action_callback(action)
+                    self.email_actions_sent += 1
+                except Exception as callback_error:
+                    # Don't let callback errors affect action publishing
+                    logger.warning(f"Email action callback failed: {callback_error}")
+
         except Exception as e:
             logger.error(f"Failed to publish action: {e}")
 
@@ -469,6 +507,7 @@ class ActionClassifier:
         return {
             "total_classified": self.total_classified,
             "classification_errors": self.classification_errors,
+            "email_actions_sent": self.email_actions_sent,
             "pending_count": len(self.pending_actions),
             "buffer_size": len(self.transcript_buffer),
         }

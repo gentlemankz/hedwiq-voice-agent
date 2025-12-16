@@ -12,7 +12,7 @@ Key Features:
 
 from enum import Enum
 from typing import Optional, List, Dict, Any
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, ConfigDict
 import time
 import uuid
 
@@ -51,6 +51,15 @@ class ActionType(str, Enum):
 
     # Default fallback
     MANUAL = "manual"                      # No automation, requires manual action
+
+
+# Email action types that trigger draft generation (Phase 3 of Real-Time Actions)
+# Defined as frozenset for immutability and O(1) lookup
+EMAIL_ACTION_TYPES = frozenset({
+    ActionType.EMAIL_FOLLOWUP,
+    ActionType.EMAIL_SHARE,
+    ActionType.EMAIL_SCHEDULE,
+})
 
 
 class UrgencyLevel(str, Enum):
@@ -129,8 +138,8 @@ class ActionMetadata(BaseModel):
             "urgency": urgency_value,
         }
 
-    class Config:
-        use_enum_values = True
+    # Pydantic v2 configuration
+    model_config = ConfigDict(use_enum_values=True)
 
 
 class ClassifiedAction(BaseModel):
@@ -233,8 +242,8 @@ class ClassifiedAction(BaseModel):
             "classifiedAt": self.classified_at,
         }
 
-    class Config:
-        use_enum_values = True
+    # Pydantic v2 configuration
+    model_config = ConfigDict(use_enum_values=True)
 
 
 # Classification constants

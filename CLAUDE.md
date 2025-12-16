@@ -16,18 +16,22 @@ python document_api.py              # Document upload API (separate process)
 uv venv && source .venv/bin/activate && uv pip install -r requirements.txt
 ```
 
-## Architecture (Phase 4)
+## Architecture (Phase 4 + Real-Time Actions)
 
 ```
 Audio → VAD/Deepgram STT → lk.transcription topic
                       ↓
               InsightAnalyzer → hedwiq.insight topic
-                      ↓
-            DocumentReferencer (Phase 3 Pipeline):
-                [Pre-filter] → [Hybrid Retrieval] → [LLM Alignment] → [Dedupe]
-                   (no LLM)        (~20ms)            (~200ms)
-                      ↓
-               hedwiq.document_reference topic (confirmed references)
+                      ↓                    ↓
+            DocumentReferencer      ActionClassifier (Phase 1 Real-Time Actions):
+            (Phase 3 Pipeline):         [Context Buffer] → [LLM Classification] → [Publish]
+                [Pre-filter] →                                    ↓
+                [Hybrid Retrieval] →               hedwiq.action topic (classified actions)
+                [LLM Alignment] →                                 ↓
+                [Dedupe]                          EmailDraftGenerator (Phase 3 Real-Time Actions):
+                      ↓                              [Meeting Context] → [LLM Draft Generation]
+               hedwiq.document_reference                              ↓
+               topic (confirmed refs)                    hedwiq.email_draft topic (AI drafts)
                       ↑
 Document API → PersistentDocumentStore → HybridRetriever (BM25 + Embeddings + RRF)
       ↑
@@ -82,8 +86,9 @@ Frontend PreJoin → Supabase Storage → POST /documents/process → Agent proc
 
 | File | Purpose |
 |------|---------|
-| `hedwiq_agent.py` | Main agent: STT + LLM insights + document reference + agenda + action classification |
+| `hedwiq_agent.py` | Main agent: STT + LLM insights + document reference + agenda + action classification + email drafts |
 | `action_classifier.py` | Phase 1 (Real-Time Actions): Action item classification by execution type |
+| `email_draft_generator.py` | Phase 3 (Real-Time Actions): AI-generated email drafts from email-type actions |
 | `agenda_tracker.py` | Phase 4: Trust-based LLM topic detection + late joiner sync |
 | `hybrid_retriever.py` | BM25 + embedding search with RRF fusion (~20ms) |
 | `document_referencer.py` | Phase 3: Pre-filter + Retrieval + LLM alignment + Dedupe |
@@ -92,9 +97,11 @@ Frontend PreJoin → Supabase Storage → POST /documents/process → Agent proc
 | `persistent_store.py` | SQLite/Redis document storage |
 | `supabase_client.py` | Supabase Storage client for downloading PDFs |
 | `prompts/action_classification.py` | LLM prompts for action type classification |
+| `prompts/email_draft_generation.py` | LLM prompts for professional email draft generation |
 | `prompts/agenda_detection.py` | LLM prompts for unified topic detection |
 | `prompts/document_reference.py` | LLM alignment prompt for reference validation |
 | `schemas/actions.py` | Action types, metadata, and ClassifiedAction model |
+| `schemas/email_draft.py` | Email draft models: EmailDraft, MeetingContext, EmailRecipient |
 | `schemas/agenda.py` | Agenda event types + detection constants |
 | `db/agenda.py` | PostgreSQL client for agenda read/write |
 
@@ -127,6 +134,26 @@ Required in `.env`:
 - `CLASSIFICATION_TIMEOUT_SECONDS = 3.0` - LLM call timeout
 - `MAX_CONTEXT_TURNS = 5` - Surrounding transcript context for classification
 - `CLASSIFICATION_DEBOUNCE = 0.5` - Debounce delay to batch nearby actions
+
+### Email Draft Generation (Phase 3 - Real-Time Actions)
+- `DRAFT_GENERATION_TIMEOUT_SECONDS = 5.0` - LLM call timeout for draft generation
+- `MIN_DRAFT_CONFIDENCE = 0.6` - Minimum confidence to publish draft
+- `MAX_TRANSCRIPT_CONTEXT_TURNS = 10` - Number of transcript turns for context
+- `MAX_TRANSCRIPT_CONTEXT_CHARS = 1500` - Max characters for transcript context
+- `MAX_CONCURRENT_GENERATIONS = 3` - Backpressure limit
+- `GENERATION_DEBOUNCE_SECONDS = 0.5` - Debounce for nearby email actions
+
+**Email Draft Flow:**
+1. ActionClassifier identifies email-type action (email_followup, email_share, email_schedule)
+2. Notifies EmailDraftGenerator via callback
+3. EmailDraftGenerator builds context from meeting info + transcript
+4. LLM generates professional email draft (subject, recipients, body)
+5. Draft published to `hedwiq.email_draft` topic for frontend
+
+**Email Types:**
+- `email_followup` - Following up on discussion points
+- `email_share` - Sharing information/documents
+- `email_schedule` - Scheduling meetings/calls
 
 ### Agenda Tracking (Phase 4 - Trust-Based LLM Architecture)
 
