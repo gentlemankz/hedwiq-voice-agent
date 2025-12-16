@@ -51,6 +51,9 @@ from transcription_config import get_stt_keyterms, get_stt_language, get_stt_mod
 # Agenda tracking imports (Phase 4)
 from agenda_tracker import AgendaTracker
 
+# Action classification imports (Phase 1 of Real-Time Actions)
+from action_classifier import ActionClassifier
+
 # Load environment variables
 load_dotenv(dotenv_path=Path(__file__).parent / ".env")
 
@@ -64,17 +67,18 @@ TRANSCRIPTION_TOPIC = "lk.transcription"
 class HedwiqAgent:
     """
     Main Hedwiq agent that manages transcription, insight extraction,
-    document reference detection, and agenda tracking.
+    document reference detection, agenda tracking, and action classification.
 
     This unified agent (Option A) handles STT, LLM analysis, document
-    retrieval, and agenda tracking in one process, providing lower latency
-    and simpler deployment.
+    retrieval, agenda tracking, and action classification in one process,
+    providing lower latency and simpler deployment.
 
     Components:
     - ParticipantTranscriber: Per-participant STT with VAD
     - InsightAnalyzer: Queue-based LLM insight extraction
     - DocumentReferencer: Real-time document reference detection (Phase 3)
     - AgendaTracker: Automatic topic detection and progress tracking (Phase 4)
+    - ActionClassifier: Action item classification for automation (Phase 1 of Real-Time Actions)
     """
 
     def __init__(
@@ -88,6 +92,7 @@ class HedwiqAgent:
         retriever_manager: Optional[RoomRetrieverManager] = None,
         document_referencer: Optional[DocumentReferencer] = None,
         agenda_tracker: Optional[AgendaTracker] = None,
+        action_classifier: Optional[ActionClassifier] = None,
     ):
         self.room = room
         self.room_id = room_id or room.name
@@ -136,6 +141,19 @@ class HedwiqAgent:
         self.insight_analyzer = InsightAnalyzer(
             room=room,
             llm=self.llm,
+        )
+
+        # Initialize action classifier (Phase 1 of Real-Time Actions)
+        # Classifies action_item insights by execution type (email, task, calendar)
+        self.action_classifier = action_classifier or ActionClassifier(
+            room=room,
+            llm=self.llm,
+        )
+
+        # Connect action classifier to insight analyzer
+        # When InsightAnalyzer publishes an action_item, it notifies ActionClassifier
+        self.insight_analyzer.set_action_item_callback(
+            self.action_classifier.on_action_item
         )
 
         # Initialize document reference detection (Phase 3)
@@ -225,12 +243,15 @@ class HedwiqAgent:
                     await self._start_transcriber(participant, track_pub.track)
 
     async def stop(self):
-        """Stop all transcribers, document referencer, and agenda tracker."""
+        """Stop all transcribers, document referencer, agenda tracker, and action classifier."""
         # Stop document referencer
         await self.document_referencer.stop()
 
         # Stop agenda tracker (Phase 4)
         await self.agenda_tracker.stop()
+
+        # Stop action classifier (Phase 1 - Real-Time Actions)
+        await self.action_classifier.shutdown()
 
         # Stop all transcribers
         for transcriber in self.transcribers.values():
@@ -327,6 +348,7 @@ class HedwiqAgent:
             self.insight_analyzer,
             self.document_referencer,  # Phase 3: Pass document referencer
             self.agenda_tracker,       # Phase 4: Pass agenda tracker
+            self.action_classifier,    # Phase 1 (Real-Time Actions): Pass action classifier
             transcription_topic=TRANSCRIPTION_TOPIC,
         )
         self.transcribers[key] = transcriber
@@ -348,6 +370,8 @@ async def entrypoint(ctx: JobContext):
     8. Publishes confirmed references via hedwiq.document_reference topic
     9. (Phase 4) Tracks agenda progress and detects topic transitions
     10. Publishes agenda events via hedwiq.agenda topic
+    11. (Phase 1 Real-Time Actions) Classifies action items by execution type
+    12. Publishes classified actions via hedwiq.action topic
     """
     logger.info(f"Hedwiq agent starting for room: {ctx.room.name}")
 

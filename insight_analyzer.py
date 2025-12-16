@@ -2,6 +2,10 @@
 Insight analysis helpers for Hedwiq Agent.
 
 Extracted from hedwiq_agent to keep the main orchestration lean.
+
+Phase 1 (Real-Time Actions) Addition:
+- Added action_item_callback for notifying ActionClassifier when action_items are published
+- ActionClassifier classifies actions and publishes to hedwiq.action topic
 """
 
 import asyncio
@@ -11,7 +15,7 @@ import logging
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import List, Optional, Dict
+from typing import List, Optional, Dict, Callable, Awaitable
 
 from livekit.agents import llm
 
@@ -20,6 +24,10 @@ from prompts.insight_extraction import (
     INSIGHT_EXTRACTION_SYSTEM_PROMPT,
     INSIGHT_EXTRACTION_USER_TEMPLATE,
 )
+from utils import clean_llm_json_response
+
+# Type alias for action item callback
+ActionItemCallback = Callable[[Insight, str], Awaitable[None]]
 
 # Constants
 MIN_ANALYSIS_INTERVAL = 5.0
@@ -49,6 +57,10 @@ class TranscriptEntry:
 class InsightAnalyzer:
     """
     Analyzes transcripts and extracts insights using Azure OpenAI.
+
+    Phase 1 (Real-Time Actions) Addition:
+    - action_item_callback: Optional callback invoked when action_item insights are published
+    - Used by ActionClassifier to receive and classify action items
     """
 
     room: any
@@ -63,9 +75,23 @@ class InsightAnalyzer:
     schedule_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     scheduled_task: Optional[asyncio.Task] = None
 
+    # Phase 1 (Real-Time Actions): Callback for action item classification
+    action_item_callback: Optional[ActionItemCallback] = None
+
     def __post_init__(self):
         self.analysis_lock = asyncio.Lock()
         self.schedule_lock = asyncio.Lock()
+
+    def set_action_item_callback(self, callback: ActionItemCallback):
+        """
+        Set callback to be invoked when action_item insights are published.
+
+        Used by ActionClassifier to receive action items for classification.
+
+        Args:
+            callback: Async function(insight: Insight, insight_id: str) -> None
+        """
+        self.action_item_callback = callback
 
     async def add_transcript(self, entry: TranscriptEntry):
         """Add a transcript entry and schedule analysis."""
@@ -202,14 +228,8 @@ class InsightAnalyzer:
 
     def _parse_insights(self, response: str, speaker_map: dict) -> Optional[List[Insight]]:
         try:
-            cleaned = response.strip()
-            if cleaned.startswith("```json"):
-                cleaned = cleaned[7:]
-            if cleaned.startswith("```"):
-                cleaned = cleaned[3:]
-            if cleaned.endswith("```"):
-                cleaned = cleaned[:-3]
-            cleaned = cleaned.strip()
+            # Clean markdown code fences if present
+            cleaned = clean_llm_json_response(response)
 
             if not cleaned or cleaned == "[]":
                 return []
@@ -306,9 +326,12 @@ class InsightAnalyzer:
 
     async def _publish_insight(self, insight: Insight):
         try:
+            insight_id = str(uuid.uuid4())
+            # Use .value for enum serialization to JSON
+            insight_type_value = insight.type.value if hasattr(insight.type, 'value') else insight.type
             insight_data = {
-                "id": str(uuid.uuid4()),
-                "type": insight.type,
+                "id": insight_id,
+                "type": insight_type_value,
                 "content": insight.content,
                 "speaker": insight.speaker,
                 "speakerName": insight.speaker_name,
@@ -321,7 +344,7 @@ class InsightAnalyzer:
                 json.dumps(insight_data),
                 topic="hedwiq.insight",
                 attributes={
-                    "insight_type": insight.type,
+                    "insight_type": insight_type_value,
                     "speaker": insight.speaker or "",
                     "confidence": str(insight.confidence),
                 },
@@ -330,6 +353,14 @@ class InsightAnalyzer:
             logger.info(
                 f"Published insight: [{insight.type}] {insight.content[:50]}..."
             )
+
+            # Phase 1 (Real-Time Actions): Notify ActionClassifier for action_items
+            if insight.type == InsightType.ACTION_ITEM and self.action_item_callback:
+                try:
+                    await self.action_item_callback(insight, insight_id)
+                except Exception as callback_error:
+                    # Don't let callback errors affect insight publishing
+                    logger.warning(f"Action item callback failed: {callback_error}")
 
         except Exception as e:
             logger.error(f"Failed to publish insight: {e}")

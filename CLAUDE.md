@@ -52,6 +52,25 @@ Transcript → Full Buffer → LLM Full Context Analysis → Execute Transition
 
 **IMPORTANT**: Agent uses `request_fnc` to set identity prefix to "hedwiq" (required for frontend event filtering). Do NOT use `agent_name` in WorkerOptions - that disables automatic dispatch!
 
+### Action Classification Flow (Phase 1 - Real-Time Actions)
+```
+action_item Insight → InsightAnalyzer callback → ActionClassifier
+                                                        ↓
+                                    Build transcript context from buffer
+                                                        ↓
+                                    LLM Classification (action type + metadata)
+                                                        ↓
+                                    hedwiq.action topic (classified actions)
+```
+
+**Action Types:**
+- `email_followup` - "send email", "follow up with", "email X about"
+- `email_share` - "share with", "send to", "forward to"
+- `email_schedule` - "schedule meeting with", "set up call"
+- `task_create` - "create task", "add to backlog"
+- `calendar_event` - "block time", "schedule", "remind me"
+- `manual` - Default fallback for unclassified actions
+
 ### Document Upload Flow
 ```
 Frontend PreJoin → Supabase Storage → POST /documents/process → Agent processes
@@ -63,7 +82,8 @@ Frontend PreJoin → Supabase Storage → POST /documents/process → Agent proc
 
 | File | Purpose |
 |------|---------|
-| `hedwiq_agent.py` | Main agent: STT + LLM insights + document reference + agenda |
+| `hedwiq_agent.py` | Main agent: STT + LLM insights + document reference + agenda + action classification |
+| `action_classifier.py` | Phase 1 (Real-Time Actions): Action item classification by execution type |
 | `agenda_tracker.py` | Phase 4: Trust-based LLM topic detection + late joiner sync |
 | `hybrid_retriever.py` | BM25 + embedding search with RRF fusion (~20ms) |
 | `document_referencer.py` | Phase 3: Pre-filter + Retrieval + LLM alignment + Dedupe |
@@ -71,8 +91,10 @@ Frontend PreJoin → Supabase Storage → POST /documents/process → Agent proc
 | `document_processor.py` | PDF parsing + embeddings |
 | `persistent_store.py` | SQLite/Redis document storage |
 | `supabase_client.py` | Supabase Storage client for downloading PDFs |
+| `prompts/action_classification.py` | LLM prompts for action type classification |
 | `prompts/agenda_detection.py` | LLM prompts for unified topic detection |
 | `prompts/document_reference.py` | LLM alignment prompt for reference validation |
+| `schemas/actions.py` | Action types, metadata, and ClassifiedAction model |
 | `schemas/agenda.py` | Agenda event types + detection constants |
 | `db/agenda.py` | PostgreSQL client for agenda read/write |
 
@@ -99,6 +121,12 @@ Required in `.env`:
 - `ALIGNMENT_TIMEOUT_SECONDS = 2.0` - LLM timeout
 - `MAX_CONCURRENT_ALIGNMENTS = 3` - Backpressure limit
 - `DEDUPE_TTL_MINUTES = 5` - Reference deduplication TTL
+
+### Action Classification (Phase 1 - Real-Time Actions)
+- `MIN_CLASSIFICATION_CONFIDENCE = 0.7` - Threshold for auto-classification
+- `CLASSIFICATION_TIMEOUT_SECONDS = 3.0` - LLM call timeout
+- `MAX_CONTEXT_TURNS = 5` - Surrounding transcript context for classification
+- `CLASSIFICATION_DEBOUNCE = 0.5` - Debounce delay to batch nearby actions
 
 ### Agenda Tracking (Phase 4 - Trust-Based LLM Architecture)
 

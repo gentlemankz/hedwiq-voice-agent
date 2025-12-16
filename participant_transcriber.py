@@ -1,6 +1,9 @@
 """
 Participant transcription worker extracted from hedwiq_agent.
 Keeps audio→text flow modular and reusable.
+
+Phase 1 (Real-Time Actions) Addition:
+- Added action_classifier parameter to feed transcript context for classification
 """
 
 import asyncio
@@ -14,10 +17,11 @@ from livekit.agents import stt
 from insight_analyzer import TranscriptEntry, InsightAnalyzer
 from document_referencer import DocumentReferencer
 
-# Type hint import for agenda tracker (avoids circular import)
+# Type hint import for agenda tracker and action classifier (avoids circular import)
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from agenda_tracker import AgendaTracker
+    from action_classifier import ActionClassifier
 
 logger = logging.getLogger("hedwiq-agent")
 
@@ -34,6 +38,7 @@ class ParticipantTranscriber:
         insight_analyzer: InsightAnalyzer,
         document_referencer: Optional[DocumentReferencer] = None,
         agenda_tracker: Optional["AgendaTracker"] = None,
+        action_classifier: Optional["ActionClassifier"] = None,
         transcription_topic: str = "lk.transcription",
     ):
         self.room = room
@@ -43,6 +48,7 @@ class ParticipantTranscriber:
         self.insight_analyzer = insight_analyzer
         self.document_referencer = document_referencer
         self.agenda_tracker = agenda_tracker
+        self.action_classifier = action_classifier
         self.transcription_topic = transcription_topic
         self._task: Optional[asyncio.Task] = None
         self._segment_counter = 0
@@ -130,6 +136,10 @@ class ParticipantTranscriber:
                             # Phase 4: Feed transcript to agenda tracker for topic detection
                             if self.agenda_tracker:
                                 await self.agenda_tracker.process_transcript(entry)
+
+                            # Phase 1 (Real-Time Actions): Feed transcript to action classifier for context
+                            if self.action_classifier:
+                                await self.action_classifier.add_transcript(entry)
 
                             current_segment_id = None
                             self._segment_start_time = None
