@@ -362,12 +362,21 @@ class InsightAnalyzer:
             )
 
             # Phase 1 (Real-Time Actions): Notify ActionClassifier for action_items
-            if insight.type == InsightType.ACTION_ITEM and self.action_item_callback:
-                try:
-                    await self.action_item_callback(insight, insight_id)
-                except Exception as callback_error:
-                    # Don't let callback errors affect insight publishing
-                    logger.warning(f"Action item callback failed: {callback_error}")
+            if insight.type == InsightType.ACTION_ITEM:
+                logger.info(
+                    f"ACTION_ITEM DETECTED: {insight.content[:80]}... "
+                    f"(confidence: {insight.confidence:.2f}, speaker: {insight.speaker_name})"
+                )
+                if self.action_item_callback:
+                    try:
+                        logger.debug(f"Invoking action_item_callback for insight_id: {insight_id}")
+                        await self.action_item_callback(insight, insight_id)
+                        logger.info(f"Action item callback completed for: {insight_id}")
+                    except Exception as callback_error:
+                        # Don't let callback errors affect insight publishing
+                        logger.warning(f"Action item callback failed: {callback_error}")
+                else:
+                    logger.warning("Action item detected but no callback is registered!")
 
         except Exception as e:
             logger.error(f"Failed to publish insight: {e}")

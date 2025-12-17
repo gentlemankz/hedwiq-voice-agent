@@ -203,7 +203,13 @@ class ActionClassifier:
             insight: The action_item Insight object
             insight_id: The UUID assigned to the insight
         """
+        logger.info(
+            f"ActionClassifier received action_item: {insight.content[:60]}... "
+            f"(id: {insight_id[:8]}...)"
+        )
+
         if self._shutdown:
+            logger.warning("ActionClassifier is shutdown, ignoring action item")
             return
 
         if insight.type != InsightType.ACTION_ITEM:
@@ -215,6 +221,8 @@ class ActionClassifier:
         if word_count < MIN_ACTION_WORDS:
             logger.debug(f"Action too short ({word_count} words): {insight.content[:50]}")
             return
+
+        logger.info(f"ActionClassifier queuing action for classification: {insight_id[:8]}...")
 
         # Queue for classification (all checks inside lock to prevent race conditions)
         async with self.schedule_lock:
@@ -473,20 +481,32 @@ class ActionClassifier:
             # Build payload
             action_data = action.to_dict()
 
+            # Handle both enum and string values (due to use_enum_values config in Pydantic model)
+            action_type_value = (
+                action.action_type.value
+                if hasattr(action.action_type, 'value')
+                else action.action_type
+            )
+            urgency_value = (
+                action.metadata.urgency.value
+                if hasattr(action.metadata.urgency, 'value')
+                else action.metadata.urgency
+            )
+
             # Publish to LiveKit
             await self.room.local_participant.send_text(
                 json.dumps(action_data),
                 topic=ACTION_TOPIC,
                 attributes={
-                    "action_type": action.action_type.value,
+                    "action_type": action_type_value,
                     "requires_email": str(action.requires_email).lower(),
-                    "urgency": action.metadata.urgency.value,
+                    "urgency": urgency_value,
                     "original_insight_id": action.original_insight_id,
                 },
             )
 
             logger.info(
-                f"Published action: [{action.action_type.value}] "
+                f"Published action: [{action_type_value}] "
                 f"{action.content[:50]}... (confidence: {action.classification_confidence:.2f})"
             )
 

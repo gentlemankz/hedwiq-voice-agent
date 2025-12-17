@@ -127,9 +127,12 @@ class EmailDraftGenerator:
         if self.llm is None:
             self.llm = self._create_llm()
 
-        # Initialize meeting context
+        # Initialize meeting context with room_id
         if not isinstance(self.meeting_context, MeetingContext):
-            self.meeting_context = MeetingContext()
+            self.meeting_context = MeetingContext(room_id=self.room_id)
+        elif not self.meeting_context.room_id and self.room_id:
+            # Ensure room_id is set even if meeting_context was provided
+            self.meeting_context.room_id = self.room_id
 
     def _create_llm(self):
         """Create Azure OpenAI LLM client."""
@@ -244,7 +247,14 @@ class EmailDraftGenerator:
         Args:
             action: The ClassifiedAction with email type
         """
+        action_type_str = action.action_type.value if hasattr(action.action_type, 'value') else action.action_type
+        logger.info(
+            f"EmailDraftGenerator received email action: [{action_type_str}] "
+            f"{action.content[:60]}... (id: {action.id[:8]}...)"
+        )
+
         if self._shutdown:
+            logger.warning("EmailDraftGenerator is shutdown, ignoring email action")
             return
 
         # Validate it's an email action
@@ -256,6 +266,8 @@ class EmailDraftGenerator:
         if action.id in self.generated_draft_ids:
             logger.debug(f"Draft already generated for action: {action.id}")
             return
+
+        logger.info(f"EmailDraftGenerator queuing email draft generation for: {action.id[:8]}...")
 
         # Queue for generation (all checks inside lock)
         async with self.schedule_lock:
@@ -524,6 +536,9 @@ class EmailDraftGenerator:
             # Build payload
             draft_data = draft.to_dict()
 
+            # Get room_id for attributes
+            room_id = draft.meeting_context.room_id or self.room_id or ""
+
             # Publish to LiveKit
             await self.room.local_participant.send_text(
                 json.dumps(draft_data),
@@ -533,6 +548,8 @@ class EmailDraftGenerator:
                     "action_id": draft.action_id,
                     "action_type": draft.action_type,
                     "status": draft.status.value if hasattr(draft.status, 'value') else draft.status,
+                    "room_id": room_id,
+                    "meeting_id": room_id,  # Use roomId as meetingId fallback
                 },
             )
 

@@ -226,6 +226,9 @@ class EmailDraft(BaseModel):
             "id": self.id,
             "actionId": self.action_id,
             "originalInsightId": self.original_insight_id,
+            # Include roomId at top level for frontend persistence API
+            "roomId": self.meeting_context.room_id or "",
+            "meetingId": self.meeting_context.room_id or "",  # Use roomId as meetingId fallback
             "suggestedTo": [r.to_dict() for r in self.suggested_to],
             "subject": self.subject,
             "body": self.body,
