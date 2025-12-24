@@ -34,7 +34,7 @@ from typing import Dict, Optional
 from dotenv import load_dotenv
 
 from livekit import agents, rtc
-from livekit.agents import stt, JobContext, WorkerOptions, cli, AutoSubscribe
+from livekit.agents import stt, JobContext, cli, AutoSubscribe, AgentServer, WorkerPermissions
 from livekit.plugins.deepgram import STT as DeepgramSTT
 from livekit.plugins.openai import LLM as OpenAILLM
 from livekit.plugins import silero
@@ -378,9 +378,44 @@ class HedwiqAgent:
         await transcriber.start()
 
 
-async def entrypoint(ctx: JobContext):
+# =============================================================================
+# Agent Server Configuration - Hidden Agent
+# =============================================================================
+
+# Create AgentServer with hidden permissions
+# Hidden agent is invisible to other participants while maintaining full functionality
+# This provides a "bot-free" user experience while secretly providing AI-powered features
+server = AgentServer(
+    permissions=WorkerPermissions(
+        can_publish=False,       # No video/audio tracks needed
+        can_subscribe=True,      # Subscribe to participant audio for transcription
+        can_publish_data=True,   # Publish text streams (transcription, insights, etc.)
+        hidden=True,             # INVISIBLE to other participants
+    ),
+)
+
+
+async def request_handler(req):
     """
-    Main entrypoint for the Hedwiq agent.
+    Handle job requests - accept all and set identity prefix to 'hedwiq'.
+
+    This ensures the agent's participant identity starts with 'hedwiq',
+    which is required for frontend event filtering (AGENT_IDENTITY_PREFIX).
+
+    NOTE: The agent is hidden (invisible to participants) but still maintains
+    its identity prefix for internal event routing and stream filtering.
+    """
+    await req.accept(
+        # Set identity with hedwiq prefix for frontend filtering
+        identity=f"hedwiq-{req.id[:8]}",
+        # No visible name needed since agent is hidden from participants
+    )
+
+
+@server.rtc_session(on_request=request_handler)
+async def agent_entrypoint(ctx: JobContext):
+    """
+    Main entrypoint for the Hedwiq agent (decorated version for AgentServer).
 
     This agent:
     1. Joins the LiveKit room invisibly (as a hidden agent)
@@ -398,7 +433,7 @@ async def entrypoint(ctx: JobContext):
     13. (Phase 3 Real-Time Actions) Generates email drafts from email-type actions
     14. Publishes email drafts via hedwiq.email_draft topic
     """
-    logger.info(f"Hedwiq agent starting for room: {ctx.room.name}")
+    logger.info(f"Hedwiq agent (hidden) starting for room: {ctx.room.name}")
 
     # Connect to the room with audio subscription
     await ctx.connect(auto_subscribe=AutoSubscribe.AUDIO_ONLY)
@@ -411,7 +446,7 @@ async def entrypoint(ctx: JobContext):
 
     logger.info(
         "Hedwiq agent is now listening to all participants "
-        "and extracting insights"
+        "and extracting insights (hidden from participant list)"
     )
 
     # Keep the agent running
@@ -423,29 +458,5 @@ async def entrypoint(ctx: JobContext):
         await agent.stop()
 
 
-async def request_handler(req):
-    """
-    Handle job requests - accept all and set identity prefix to 'hedwiq'.
-
-    This ensures the agent's participant identity starts with 'hedwiq',
-    which is required for frontend event filtering (AGENT_IDENTITY_PREFIX).
-
-    NOTE: Do NOT use agent_name in WorkerOptions - that enables explicit dispatch
-    and the agent will never join rooms automatically.
-    """
-    await req.accept(
-        # Set identity with hedwiq prefix for frontend filtering
-        identity=f"hedwiq-{req.id[:8]}",
-        name="Hedwiq Agent",
-    )
-
-
 if __name__ == "__main__":
-    cli.run_app(
-        WorkerOptions(
-            entrypoint_fnc=entrypoint,
-            request_fnc=request_handler,
-            # NOTE: Do NOT set agent_name here - it disables automatic dispatch!
-            # The agent identity prefix is set via request_handler instead.
-        )
-    )
+    cli.run_app(server)

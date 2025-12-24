@@ -1025,6 +1025,11 @@ class AgendaTracker:
         Update agent's participant attributes with current agenda state.
 
         This enables late joiner sync without relying on text stream replay.
+
+        NOTE: Hidden participants may not be able to set attributes. This is
+        expected behavior and should not block agent operation. Late joiner
+        sync is handled via API fetch (use-agenda-api.ts), so attributes are
+        a nice-to-have fallback, not critical path.
         """
         if not self.agenda:
             return
@@ -1054,6 +1059,7 @@ class AgendaTracker:
             )
 
             # Update participant attributes
+            # This may fail silently for hidden participants - that's OK
             await self.room.local_participant.set_attributes({
                 "agendaState": json.dumps(state.to_dict())
             })
@@ -1061,7 +1067,10 @@ class AgendaTracker:
             logger.debug(f"Updated participant attributes with agenda state")
 
         except Exception as e:
-            logger.warning(f"Failed to update participant attributes: {e}")
+            # Log as debug, not warning - hidden participants may not support attributes
+            # This is expected behavior when agent is hidden
+            # Late joiner sync is handled via API, so this is non-critical
+            logger.debug(f"Could not update participant attributes (expected for hidden agents): {e}")
 
     async def publish_sync_event(self):
         """
