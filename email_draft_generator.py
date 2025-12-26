@@ -46,6 +46,14 @@ from schemas.email_draft import (
 from prompts.email_draft_generation import format_email_draft_prompt
 from insight_analyzer import TranscriptEntry
 from utils import clean_llm_json_response
+from usage_reporter import get_usage_reporter
+
+# Shared identity utilities (for billing attribution)
+from utils.identity import (
+    extract_user_id_from_identity,
+    is_agent_identity,
+    get_meeting_owner_from_room,
+)
 
 logger = logging.getLogger("hedwiq-email-draft")
 
@@ -558,8 +566,70 @@ class EmailDraftGenerator:
                 f"Subject: {draft.subject[:50]}... (confidence: {draft.generation_confidence:.2f})"
             )
 
+            # Report email draft usage to Polar for billing
+            # M1 Fix: This awaits (not fire-and-forget) to ensure usage is reported
+            # before the function returns, preventing dropped events on serverless
+            await self._report_draft_usage(draft, room_id)
+
         except Exception as e:
             logger.error(f"Failed to publish draft: {e}")
+
+    async def _report_draft_usage(self, draft: EmailDraft, room_id: str):
+        """
+        Report email draft usage to Polar for billing.
+
+        L4 Fix: Added timeout to prevent slow usage API from delaying subsequent
+        draft generations. Draft is already published at this point.
+
+        Args:
+            draft: The published email draft
+            room_id: The room/meeting ID
+        """
+        # L4 Fix: 3 second timeout to prevent blocking subsequent generations
+        USAGE_REPORT_TIMEOUT = 3.0
+
+        try:
+            # Get user_id for usage attribution
+            user_id = self._get_meeting_owner_id()
+
+            if not user_id:
+                logger.warning(
+                    "[EmailDraftGenerator] Could not determine user_id for usage tracking - "
+                    "email draft usage will not be billed"
+                )
+                return
+
+            # Report usage via the singleton UsageReporter with timeout
+            reporter = get_usage_reporter()
+            try:
+                result = await asyncio.wait_for(
+                    reporter.report_email_draft(
+                        user_id=user_id,
+                        count=1,
+                        meeting_id=room_id,
+                        action_type=draft.action_type,
+                    ),
+                    timeout=USAGE_REPORT_TIMEOUT,
+                )
+
+                if result.success:
+                    logger.info(
+                        f"[EmailDraftGenerator] Reported email draft usage for user {user_id}"
+                    )
+                else:
+                    logger.warning(
+                        f"[EmailDraftGenerator] Failed to report email draft usage: {result.error}"
+                    )
+            except asyncio.TimeoutError:
+                # Log timeout but don't fail - draft is already published
+                logger.warning(
+                    f"[EmailDraftGenerator] Usage reporting timeout ({USAGE_REPORT_TIMEOUT}s) - "
+                    "draft published but billing may be delayed"
+                )
+
+        except Exception as e:
+            # Don't fail the publish operation on usage reporting errors
+            logger.error(f"[EmailDraftGenerator] Error reporting draft usage: {e}")
 
     def get_stats(self) -> Dict:
         """Get generation statistics."""
@@ -571,3 +641,16 @@ class EmailDraftGenerator:
             "buffer_size": len(self.transcript_buffer),
             "meeting_participants": len(self.meeting_context.participants),
         }
+
+    def _get_meeting_owner_id(self) -> Optional[str]:
+        """
+        Get the meeting owner's user_id for usage tracking.
+
+        H4 Fix: Uses shared identity module (utils.identity) to avoid code duplication.
+        C3 Fix: Properly handles UUIDs with hyphens via regex-based suffix extraction.
+
+        Returns:
+            User ID of the meeting owner, or None if not determinable
+        """
+        # Use shared utility for proper UUID extraction
+        return get_meeting_owner_from_room(self.room)
