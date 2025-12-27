@@ -70,14 +70,20 @@ app.add_middleware(
 )
 
 # Initialize services
-document_store = PersistentDocumentStore(backend="sqlite")
+DOCUMENT_STORE_BACKEND = os.getenv("DOCUMENT_STORE_BACKEND", "sqlite")
+REDIS_URL = os.getenv("REDIS_URL")
+
+document_store = PersistentDocumentStore(
+    backend=DOCUMENT_STORE_BACKEND,
+    redis_url=REDIS_URL
+)
 retriever_manager = RoomRetrieverManager.get_instance(document_store)
 upload_service = DocumentUploadService(
     store=document_store,
     retriever_manager=retriever_manager  # Wire up retriever for index rebuilding
 )
 
-logger.info("Document API services initialized with retriever manager")
+logger.info(f"Document API services initialized with {DOCUMENT_STORE_BACKEND} backend")
 
 # Security constants
 INTERNAL_SERVICE_TOKEN = os.getenv("INTERNAL_SERVICE_TOKEN", "")
