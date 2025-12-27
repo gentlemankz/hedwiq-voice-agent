@@ -1,11 +1,11 @@
 """
-Insight analysis helpers for Hedwiq Agent.
+Insight analysis helpers for Luframe Agent.
 
-Extracted from hedwiq_agent to keep the main orchestration lean.
+Extracted from luframe_agent to keep the main orchestration lean.
 
 Phase 1 (Real-Time Actions) Addition:
 - Added action_item_callback for notifying ActionClassifier when action_items are published
-- ActionClassifier classifies actions and publishes to hedwiq.action topic
+- ActionClassifier classifies actions and publishes to luframe.action topic
 """
 
 import asyncio
@@ -38,7 +38,7 @@ MIN_CONFIDENCE_THRESHOLD = 0.75
 MIN_INSIGHT_WORDS = 8
 SEMANTIC_SIMILARITY_THRESHOLD = 0.5
 
-logger = logging.getLogger("hedwiq-agent")
+logger = logging.getLogger("luframe-agent")
 
 
 @dataclass
@@ -349,7 +349,7 @@ class InsightAnalyzer:
 
             await self.room.local_participant.send_text(
                 json.dumps(insight_data),
-                topic="hedwiq.insight",
+                topic="luframe.insight",
                 attributes={
                     "insight_type": insight_type_value,
                     "speaker": insight.speaker or "",

@@ -1,5 +1,5 @@
 """
-Utility modules for Hedwiq Agent.
+Utility modules for Luframe Agent.
 
 This package provides shared utilities used across the agent:
 - identity: Parsing LiveKit participant identities for billing attribution

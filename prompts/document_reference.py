@@ -1,5 +1,5 @@
 """
-Document Reference Prompts for Hedwiq Agent - Phase 3 Implementation
+Document Reference Prompts for Luframe Agent - Phase 3 Implementation
 
 Contains the single LLM alignment prompt for validating document references.
 The alignment step runs AFTER hybrid retrieval returns top-k candidates.

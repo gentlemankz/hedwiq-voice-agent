@@ -1,5 +1,5 @@
 """
-Document Schemas for Hedwiq Agent
+Document Schemas for Luframe Agent
 
 Defines the data models for document reference feature.
 Documents are uploaded by admins and used for real-time reference detection

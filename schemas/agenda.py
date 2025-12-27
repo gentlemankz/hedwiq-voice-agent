@@ -1,5 +1,5 @@
 """
-Agenda Schemas for Hedwiq Agent - Phase 4 Implementation
+Agenda Schemas for Luframe Agent - Phase 4 Implementation
 
 Defines the data models for meeting agenda tracking.
 These mirror the frontend types in frontend/types/agenda.ts and the database
@@ -322,10 +322,10 @@ class StabilityState:
 # ============================================================================
 
 # LiveKit topic for agenda events
-AGENDA_TOPIC = "hedwiq.agenda"
+AGENDA_TOPIC = "luframe.agenda"
 
 # Agent identity prefix (must match frontend constant)
-AGENT_IDENTITY_PREFIX = "hedwiq"
+AGENT_IDENTITY_PREFIX = "luframe"
 
 # ============================================================================
 # NEW ARCHITECTURE: Trust the LLM

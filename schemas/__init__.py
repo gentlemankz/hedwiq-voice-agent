@@ -1,5 +1,5 @@
 """
-Hedwiq Agent Schemas
+Luframe Agent Schemas
 
 This module contains Pydantic models and enums for data validation and serialization.
 """

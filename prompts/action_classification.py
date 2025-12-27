@@ -1,5 +1,5 @@
 """
-Action Classification Prompts for Hedwiq Agent - Phase 1 of Real-Time Actions
+Action Classification Prompts for Luframe Agent - Phase 1 of Real-Time Actions
 
 Contains LLM prompts for classifying action items by execution type.
 Classification determines how actions can be automated (email, task, calendar).

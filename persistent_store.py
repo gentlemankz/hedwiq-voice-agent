@@ -1,5 +1,5 @@
 """
-Persistent Document Store for Hedwiq Agent
+Persistent Document Store for Luframe Agent
 
 Provides persistent storage for documents with room scoping and TTL.
 Supports both SQLite (for development/single-instance) and Redis
@@ -52,7 +52,7 @@ from schemas.documents import (
 if TYPE_CHECKING:
     from hybrid_retriever import RoomRetrieverManager
 
-logger = logging.getLogger("hedwiq-document-store")
+logger = logging.getLogger("luframe-document-store")
 
 
 def _validate_doc_id(doc_id: str) -> str:
@@ -270,7 +270,7 @@ class PersistentDocumentStore:
 
     def _add_redis(self, doc: StoredDocument):
         """Add document to Redis."""
-        key = f"hedwiq:doc:{doc.room_id}:{doc.id}"
+        key = f"luframe:doc:{doc.room_id}:{doc.id}"
         ttl_seconds = DOCUMENT_TTL_HOURS * 3600
         self.redis.setex(
             key,
@@ -305,7 +305,7 @@ class PersistentDocumentStore:
 
     def _get_docs_redis(self, room_id: str) -> List[StoredDocument]:
         """Get documents from Redis."""
-        pattern = f"hedwiq:doc:{room_id}:*"
+        pattern = f"luframe:doc:{room_id}:*"
         keys = self.redis.keys(pattern)
         docs = []
         for key in keys:
@@ -350,7 +350,7 @@ class PersistentDocumentStore:
 
     def _get_doc_redis(self, room_id: str, doc_id: str) -> Optional[StoredDocument]:
         """Get document from Redis."""
-        key = f"hedwiq:doc:{room_id}:{doc_id}"
+        key = f"luframe:doc:{room_id}:{doc_id}"
         data = self.redis.get(key)
         if data:
             return StoredDocument(**json.loads(data))
@@ -431,7 +431,7 @@ class PersistentDocumentStore:
             doc = self.get_document(room_id, doc_id)
 
             if self.backend == "redis":
-                key = f"hedwiq:doc:{room_id}:{doc_id}"
+                key = f"luframe:doc:{room_id}:{doc_id}"
                 self.redis.delete(key)
             else:
                 conn = sqlite3.connect(self.db_path)
@@ -463,7 +463,7 @@ class PersistentDocumentStore:
             docs = self.get_documents_for_room(room_id)
 
             if self.backend == "redis":
-                pattern = f"hedwiq:doc:{room_id}:*"
+                pattern = f"luframe:doc:{room_id}:*"
                 keys = self.redis.keys(pattern)
                 if keys:
                     self.redis.delete(*keys)

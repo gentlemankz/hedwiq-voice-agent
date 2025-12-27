@@ -1,5 +1,5 @@
 """
-Hybrid Retriever for Hedwiq Agent - Phase 2 Implementation
+Hybrid Retriever for Luframe Agent - Phase 2 Implementation
 
 Provides hybrid retrieval combining BM25 (lexical) and embeddings (semantic)
 with Reciprocal Rank Fusion for document reference detection.
@@ -50,7 +50,7 @@ from schemas.documents import (
 if TYPE_CHECKING:
     from persistent_store import PersistentDocumentStore
 
-logger = logging.getLogger("hedwiq-hybrid-retriever")
+logger = logging.getLogger("luframe-hybrid-retriever")
 
 
 # Stop phrases for pre-filter (greetings, fillers, etc.)

@@ -1,5 +1,5 @@
 """
-Email Draft Generation Prompts for Hedwiq Agent - Phase 3 of Real-Time Actions
+Email Draft Generation Prompts for Luframe Agent - Phase 3 of Real-Time Actions
 
 Contains LLM prompts for generating professional email drafts from meeting action items.
 Drafts are generated when ActionClassifier identifies email-type actions.

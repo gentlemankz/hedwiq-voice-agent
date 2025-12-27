@@ -1,5 +1,5 @@
 """
-Agenda Database Client for Hedwiq Agent - Phase 4 Implementation
+Agenda Database Client for Luframe Agent - Phase 4 Implementation
 
 Provides direct PostgreSQL access for agenda operations.
 The agent reads agenda from the database (created by frontend)
@@ -19,7 +19,7 @@ import os
 from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any
 
-logger = logging.getLogger("hedwiq-agenda-db")
+logger = logging.getLogger("luframe-agenda-db")
 
 
 def _utc_now_naive() -> datetime:

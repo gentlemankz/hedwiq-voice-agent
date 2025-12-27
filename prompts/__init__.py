@@ -1,5 +1,5 @@
 """
-Hedwiq Agent Prompts
+Luframe Agent Prompts
 
 This module contains LLM prompts for insight extraction, analysis,
 document reference detection, action classification, and email draft generation.

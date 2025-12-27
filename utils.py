@@ -1,5 +1,5 @@
 """
-Utility functions for Hedwiq Agent.
+Utility functions for Luframe Agent.
 
 Common helpers shared across modules.
 """
@@ -8,7 +8,7 @@ import json
 import logging
 from typing import Any, Optional
 
-logger = logging.getLogger("hedwiq-agent")
+logger = logging.getLogger("luframe-agent")
 
 
 def clean_llm_json_response(response: str) -> str:

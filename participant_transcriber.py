@@ -1,5 +1,5 @@
 """
-Participant transcription worker extracted from hedwiq_agent.
+Participant transcription worker extracted from luframe_agent.
 Keeps audio→text flow modular and reusable.
 
 Phase 1 (Real-Time Actions) Addition:
@@ -27,7 +27,7 @@ if TYPE_CHECKING:
     from action_classifier import ActionClassifier
     from email_draft_generator import EmailDraftGenerator
 
-logger = logging.getLogger("hedwiq-agent")
+logger = logging.getLogger("luframe-agent")
 
 
 class ParticipantTranscriber:

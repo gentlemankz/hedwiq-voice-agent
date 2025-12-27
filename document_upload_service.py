@@ -10,7 +10,7 @@ from typing import Optional
 from schemas.documents import MAX_DOCUMENTS_PER_ROOM
 from persistent_store import PersistentDocumentStore
 
-logger = logging.getLogger("hedwiq-document-store")
+logger = logging.getLogger("luframe-document-store")
 
 
 class DocumentUploadService:

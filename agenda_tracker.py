@@ -1,5 +1,5 @@
 """
-Agenda Tracker for Hedwiq Agent - Phase 4 Implementation (Trust-Based LLM)
+Agenda Tracker for Luframe Agent - Phase 4 Implementation (Trust-Based LLM)
 
 Provides real-time agenda topic detection and progress tracking.
 Analyzes transcripts using LLM to understand conversation context and
@@ -28,7 +28,7 @@ Key Features:
 - Automatic first topic start for active agendas
 
 Usage:
-    # In hedwiq_agent.py
+    # In luframe_agent.py
     tracker = AgendaTracker(room, room_id, llm)
     await tracker.start()
 
@@ -73,7 +73,7 @@ from prompts.agenda_detection import (
 )
 from insight_analyzer import TranscriptEntry
 
-logger = logging.getLogger("hedwiq-agenda-tracker")
+logger = logging.getLogger("luframe-agenda-tracker")
 
 
 @dataclass
@@ -1115,7 +1115,7 @@ class AgendaTracker:
         """
         Handle new participant connection - publish sync event.
 
-        Called from HedwiqAgent when a new participant joins.
+        Called from LuframeAgent when a new participant joins.
         """
         if not self.agenda or not self.is_meeting_started:
             return

@@ -1,5 +1,5 @@
 """
-Document Processor for Hedwiq Agent
+Document Processor for Luframe Agent
 
 Handles PDF parsing with coordinate extraction and text segmentation.
 Key features:
@@ -32,7 +32,7 @@ from schemas.documents import (
     MAX_SEGMENT_LENGTH,
 )
 
-logger = logging.getLogger("hedwiq-document-processor")
+logger = logging.getLogger("luframe-document-processor")
 
 
 class PDFProcessor:

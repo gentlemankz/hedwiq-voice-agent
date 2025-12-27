@@ -1,5 +1,5 @@
 """
-Insight Schemas for Hedwiq Agent
+Insight Schemas for Luframe Agent
 
 Defines the data models for meeting insights extracted by the AI agent.
 

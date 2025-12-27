@@ -1,6 +1,6 @@
-# Hedwiq Agent
+# Luframe Agent
 
-A Python-based LiveKit agent that provides real-time transcription and AI-powered insight extraction for Hedwiq meetings.
+A Python-based LiveKit agent that provides real-time transcription and AI-powered insight extraction for Luframe meetings.
 
 ## Overview
 
@@ -9,7 +9,7 @@ This agent joins LiveKit rooms as an invisible participant and:
 - Performs real-time speech-to-text transcription using Deepgram Nova-2
 - Analyzes transcripts with Azure OpenAI to extract insights
 - Publishes transcriptions via LiveKit text streams (`lk.transcription` topic)
-- Publishes insights via LiveKit text streams (`hedwiq.insight` topic)
+- Publishes insights via LiveKit text streams (`luframe.insight` topic)
 - The frontend receives both streams and displays them in the sidebar
 
 ## Features
@@ -98,10 +98,10 @@ AZURE_OPENAI_DEPLOYMENT=gpt-4o-mini
 ### Development Mode (Full Agent with Insights)
 
 ```bash
-python hedwiq_agent.py dev
+python luframe_agent.py dev
 ```
 
-This runs the full Hedwiq agent with both transcription and insight extraction.
+This runs the full Luframe agent with both transcription and insight extraction.
 
 ### Transcription Only Mode
 
@@ -114,7 +114,7 @@ python transcription_agent.py dev
 ### Production Mode
 
 ```bash
-python hedwiq_agent.py start
+python luframe_agent.py start
 ```
 
 ## Architecture
@@ -123,7 +123,7 @@ python hedwiq_agent.py start
 ┌─────────────────────────────────────────────────────────────┐
 │                      LiveKit Room                            │
 ├─────────────┬─────────────┬─────────────┬──────────────────┤
-│ Participant │ Participant │ Participant │   Hedwiq Agent   │
+│ Participant │ Participant │ Participant │   Luframe Agent   │
 │   (User A)  │   (User B)  │   (User C)  │   (Invisible)    │
 └──────┬──────┴──────┬──────┴──────┬──────┴────────┬─────────┘
        │             │             │               │
@@ -133,7 +133,7 @@ python hedwiq_agent.py start
                            │
                            ▼
        ┌───────────────────────────────────────────┐
-       │            Hedwiq Agent Pipeline          │
+       │            Luframe Agent Pipeline          │
        ├───────────────────────────────────────────┤
        │  ┌─────────────────────────────────────┐  │
        │  │   Multi-Participant Transcriber     │  │
@@ -150,7 +150,7 @@ python hedwiq_agent.py start
        │  └──────────────────┬──────────────────┘  │
        │                     │                     │
        │                     ▼                     │
-       │        hedwiq.insight text stream        │
+       │        luframe.insight text stream        │
        └───────────────────────────────────────────┘
                            │
                            ▼
@@ -163,7 +163,7 @@ python hedwiq_agent.py start
 | Topic | Purpose | Data Format |
 |-------|---------|-------------|
 | `lk.transcription` | Real-time transcription | Plain text with attributes |
-| `hedwiq.insight` | Detected insights | JSON: `{type, content, speaker, confidence}` |
+| `luframe.insight` | Detected insights | JSON: `{type, content, speaker, confidence}` |
 
 ## Troubleshooting
 
@@ -244,7 +244,7 @@ DOCUMENT_API_PORT=8000
 
 ```
 agent/
-├── hedwiq_agent.py          # Main agent with transcription + insights
+├── luframe_agent.py          # Main agent with transcription + insights
 ├── transcription_agent.py   # Transcription-only agent
 ├── document_api.py          # HTTP API for document upload (NEW)
 ├── document_processor.py    # PDF parsing + embeddings (NEW)

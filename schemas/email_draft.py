@@ -1,5 +1,5 @@
 """
-Email Draft Schemas for Hedwiq Agent
+Email Draft Schemas for Luframe Agent
 
 Defines the data models for email draft generation feature (Phase 3 of Real-Time Actions).
 Email drafts are generated from classified email-type actions during meetings.
@@ -115,7 +115,7 @@ class EmailDraft(BaseModel):
     This model represents a complete email draft ready for user review.
     Generated when ActionClassifier identifies an email-type action.
 
-    Published to the hedwiq.email_draft topic for frontend consumption.
+    Published to the luframe.email_draft topic for frontend consumption.
     """
 
     id: str = Field(default_factory=generate_draft_id)

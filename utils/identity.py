@@ -25,7 +25,7 @@ from livekit import rtc
 IDENTITY_SUFFIX_PATTERN = re.compile(r'-[0-9a-f]{8}$')
 
 # Agent identity prefix
-AGENT_IDENTITY_PREFIX = "hedwiq"
+AGENT_IDENTITY_PREFIX = "luframe"
 
 
 def extract_user_id_from_identity(identity: Optional[str]) -> Optional[str]:

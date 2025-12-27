@@ -1,5 +1,5 @@
 """
-Hedwiq Agent - Real-time Transcription, Insight Extraction, and Agenda Tracking
+Luframe Agent - Real-time Transcription, Insight Extraction, and Agenda Tracking
 
 A LiveKit agent that provides:
 1. Real-time transcription for all meeting participants
@@ -73,14 +73,14 @@ load_dotenv(dotenv_path=Path(__file__).parent / ".env")
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("hedwiq-agent")
+logger = logging.getLogger("luframe-agent")
 
 TRANSCRIPTION_TOPIC = "lk.transcription"
 
 
-class HedwiqAgent:
+class LuframeAgent:
     """
-    Main Hedwiq agent that manages transcription, insight extraction,
+    Main Luframe agent that manages transcription, insight extraction,
     document reference detection, agenda tracking, and action classification.
 
     This unified agent (Option A) handles STT, LLM analysis, document
@@ -296,7 +296,7 @@ class HedwiqAgent:
         if self._human_participant_count > 0 and self._last_human_leave_time is None:
             self._last_human_leave_time = time.time()
             logger.info(
-                f"[HedwiqAgent] Agent stopping with {self._human_participant_count} human(s) "
+                f"[LuframeAgent] Agent stopping with {self._human_participant_count} human(s) "
                 f"still present, setting leave time to {self._last_human_leave_time:.0f}"
             )
 
@@ -334,7 +334,7 @@ class HedwiqAgent:
         # No humans ever joined - nothing to bill
         if self._first_human_join_time is None:
             logger.info(
-                "[HedwiqAgent] No human participants joined - skipping usage report"
+                "[LuframeAgent] No human participants joined - skipping usage report"
             )
             return
 
@@ -354,7 +354,7 @@ class HedwiqAgent:
 
         if not user_id:
             logger.warning(
-                f"[HedwiqAgent] Could not determine meeting owner for room {self.room_id}. "
+                f"[LuframeAgent] Could not determine meeting owner for room {self.room_id}. "
                 "Meeting minutes will not be billed. This may happen if no human "
                 "participants were ever in the room."
             )
@@ -371,17 +371,17 @@ class HedwiqAgent:
 
             if result.success:
                 logger.info(
-                    f"[HedwiqAgent] Reported {duration_minutes} meeting minutes "
+                    f"[LuframeAgent] Reported {duration_minutes} meeting minutes "
                     f"for user {user_id} in room {self.room_id} "
                     f"(actual presence: {duration_seconds:.0f}s)"
                 )
             else:
                 logger.warning(
-                    f"[HedwiqAgent] Failed to report meeting usage: {result.error}"
+                    f"[LuframeAgent] Failed to report meeting usage: {result.error}"
                 )
         except Exception as e:
             # Don't fail the shutdown on usage reporting errors
-            logger.error(f"[HedwiqAgent] Error reporting meeting usage: {e}")
+            logger.error(f"[LuframeAgent] Error reporting meeting usage: {e}")
 
     async def _check_meeting_limits_async(self):
         """
@@ -402,7 +402,7 @@ class HedwiqAgent:
             user_id = self._get_meeting_owner_id()
             if not user_id:
                 logger.debug(
-                    "[HedwiqAgent] No meeting owner identified yet for limit check"
+                    "[LuframeAgent] No meeting owner identified yet for limit check"
                 )
                 return
 
@@ -411,21 +411,21 @@ class HedwiqAgent:
 
             if allowed:
                 logger.info(
-                    f"[HedwiqAgent] Meeting limits check: user {user_id} has "
+                    f"[LuframeAgent] Meeting limits check: user {user_id} has "
                     f"{status.remaining_minutes} minutes remaining "
                     f"(tier: {status.tier}, used: {status.minutes_used}/{status.minutes_limit})"
                 )
             else:
                 # Log warning but don't block - frontend should have enforced this
                 logger.warning(
-                    f"[HedwiqAgent] User {user_id} is over meeting limits! "
+                    f"[LuframeAgent] User {user_id} is over meeting limits! "
                     f"Tier: {status.tier}, Used: {status.minutes_used}/{status.minutes_limit}. "
                     f"Reason: {status.reason}. "
                     "Meeting continues (enforcement should be in frontend)."
                 )
         except Exception as e:
             # Don't let limit check failures affect the meeting
-            logger.debug(f"[HedwiqAgent] Limit check failed (non-critical): {e}")
+            logger.debug(f"[LuframeAgent] Limit check failed (non-critical): {e}")
 
     def _get_meeting_owner_id(self) -> Optional[str]:
         """
@@ -464,7 +464,7 @@ class HedwiqAgent:
             if self._first_human_join_time is None:
                 self._first_human_join_time = time.time()
                 logger.info(
-                    f"[HedwiqAgent] Existing human participant found, "
+                    f"[LuframeAgent] Existing human participant found, "
                     f"setting join time to {self._first_human_join_time:.0f}"
                 )
 
@@ -473,11 +473,11 @@ class HedwiqAgent:
                 user_id = extract_user_id_from_identity(participant.identity)
                 if user_id:
                     self._meeting_owner_id = user_id
-                    logger.info(f"[HedwiqAgent] Meeting owner from existing participant: {user_id}")
+                    logger.info(f"[LuframeAgent] Meeting owner from existing participant: {user_id}")
 
         if self._human_participant_count > 0:
             logger.info(
-                f"[HedwiqAgent] Initialized with {self._human_participant_count} "
+                f"[LuframeAgent] Initialized with {self._human_participant_count} "
                 f"existing human participant(s)"
             )
 
@@ -541,7 +541,7 @@ class HedwiqAgent:
         if self._first_human_join_time is None:
             self._first_human_join_time = time.time()
             logger.info(
-                f"[HedwiqAgent] First human participant joined at "
+                f"[LuframeAgent] First human participant joined at "
                 f"{self._first_human_join_time:.0f}"
             )
 
@@ -551,7 +551,7 @@ class HedwiqAgent:
             user_id = extract_user_id_from_identity(participant.identity)
             if user_id:
                 self._meeting_owner_id = user_id
-                logger.info(f"[HedwiqAgent] Meeting owner identified: {user_id}")
+                logger.info(f"[LuframeAgent] Meeting owner identified: {user_id}")
 
         # Phase 4: Notify agenda tracker for late joiner sync
         # This publishes agenda sync event so late joiners get current state
@@ -577,7 +577,7 @@ class HedwiqAgent:
             if self._human_participant_count == 0:
                 self._last_human_leave_time = time.time()
                 logger.info(
-                    f"[HedwiqAgent] Last human participant left at "
+                    f"[LuframeAgent] Last human participant left at "
                     f"{self._last_human_leave_time:.0f}"
                 )
 
@@ -635,17 +635,17 @@ server = AgentServer(
 
 async def request_handler(req):
     """
-    Handle job requests - accept all and set identity prefix to 'hedwiq'.
+    Handle job requests - accept all and set identity prefix to 'luframe'.
 
-    This ensures the agent's participant identity starts with 'hedwiq',
+    This ensures the agent's participant identity starts with 'luframe',
     which is required for frontend event filtering (AGENT_IDENTITY_PREFIX).
 
     NOTE: The agent is hidden (invisible to participants) but still maintains
     its identity prefix for internal event routing and stream filtering.
     """
     await req.accept(
-        # Set identity with hedwiq prefix for frontend filtering
-        identity=f"hedwiq-{req.id[:8]}",
+        # Set identity with luframe prefix for frontend filtering
+        identity=f"luframe-{req.id[:8]}",
         # No visible name needed since agent is hidden from participants
     )
 
@@ -653,7 +653,7 @@ async def request_handler(req):
 @server.rtc_session(on_request=request_handler)
 async def agent_entrypoint(ctx: JobContext):
     """
-    Main entrypoint for the Hedwiq agent (decorated version for AgentServer).
+    Main entrypoint for the Luframe agent (decorated version for AgentServer).
 
     This agent:
     1. Joins the LiveKit room invisibly (as a hidden agent)
@@ -661,29 +661,29 @@ async def agent_entrypoint(ctx: JobContext):
     3. Runs STT (Speech-to-Text) on all audio
     4. Publishes transcriptions via LiveKit text streams (lk.transcription topic)
     5. Analyzes transcripts with Azure OpenAI for insights
-    6. Publishes insights via text streams (hedwiq.insight topic)
+    6. Publishes insights via text streams (luframe.insight topic)
     7. (Phase 3) Detects document references using hybrid retrieval + LLM alignment
-    8. Publishes confirmed references via hedwiq.document_reference topic
+    8. Publishes confirmed references via luframe.document_reference topic
     9. (Phase 4) Tracks agenda progress and detects topic transitions
-    10. Publishes agenda events via hedwiq.agenda topic
+    10. Publishes agenda events via luframe.agenda topic
     11. (Phase 1 Real-Time Actions) Classifies action items by execution type
-    12. Publishes classified actions via hedwiq.action topic
+    12. Publishes classified actions via luframe.action topic
     13. (Phase 3 Real-Time Actions) Generates email drafts from email-type actions
-    14. Publishes email drafts via hedwiq.email_draft topic
+    14. Publishes email drafts via luframe.email_draft topic
     """
-    logger.info(f"Hedwiq agent (hidden) starting for room: {ctx.room.name}")
+    logger.info(f"Luframe agent (hidden) starting for room: {ctx.room.name}")
 
     # Connect to the room with audio subscription
     await ctx.connect(auto_subscribe=AutoSubscribe.AUDIO_ONLY)
 
-    logger.info("Connected to room, starting Hedwiq agent")
+    logger.info("Connected to room, starting Luframe agent")
 
     # Create and start the agent
-    agent = HedwiqAgent(ctx.room)
+    agent = LuframeAgent(ctx.room)
     await agent.start()
 
     logger.info(
-        "Hedwiq agent is now listening to all participants "
+        "Luframe agent is now listening to all participants "
         "and extracting insights (hidden from participant list)"
     )
 

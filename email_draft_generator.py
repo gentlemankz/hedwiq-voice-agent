@@ -1,11 +1,11 @@
 """
-Email Draft Generator for Hedwiq Agent - Phase 3 of Real-Time Actions
+Email Draft Generator for Luframe Agent - Phase 3 of Real-Time Actions
 
 Generates AI-powered email drafts from classified email-type actions.
 Receives actions from ActionClassifier and produces ready-to-send drafts.
 
 Publishing:
-- Publishes to hedwiq.email_draft topic for frontend consumption
+- Publishes to luframe.email_draft topic for frontend consumption
 
 Integration:
 - ActionClassifier calls on_email_action() when it publishes email-type actions
@@ -55,10 +55,10 @@ from utils.identity import (
     get_meeting_owner_from_room,
 )
 
-logger = logging.getLogger("hedwiq-email-draft")
+logger = logging.getLogger("luframe-email-draft")
 
 # LiveKit topic for email drafts
-EMAIL_DRAFT_TOPIC = "hedwiq.email_draft"
+EMAIL_DRAFT_TOPIC = "luframe.email_draft"
 
 # Buffer sizes
 MAX_CONTEXT_BUFFER = 20        # Number of recent transcript entries for context
@@ -73,7 +73,7 @@ class EmailDraftGenerator:
     Receives email-type ClassifiedActions from ActionClassifier and:
     1. Builds context from meeting info and transcript
     2. Generates professional email draft using LLM
-    3. Publishes draft to hedwiq.email_draft topic
+    3. Publishes draft to luframe.email_draft topic
 
     Integration:
     - ActionClassifier calls on_email_action() when it publishes email actions
@@ -81,7 +81,7 @@ class EmailDraftGenerator:
     - Meeting context (title, participants) is set via set_meeting_context()
 
     Publishing:
-    - Topic: hedwiq.email_draft
+    - Topic: luframe.email_draft
     - Attributes: action_id, action_type, status
 
     Resource Management:
@@ -93,7 +93,7 @@ class EmailDraftGenerator:
     room_id: str = ""
     llm: Optional[Any] = None
 
-    # Meeting context (set by HedwiqAgent when available)
+    # Meeting context (set by LuframeAgent when available)
     meeting_context: MeetingContext = field(default_factory=MeetingContext)
 
     # Transcript context buffer (bounded deque)
@@ -173,7 +173,7 @@ class EmailDraftGenerator:
         """
         Set meeting context for better draft generation.
 
-        Called by HedwiqAgent when meeting info is available (e.g., from
+        Called by LuframeAgent when meeting info is available (e.g., from
         agenda tracker or meeting API).
 
         Args:

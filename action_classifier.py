@@ -1,5 +1,5 @@
 """
-Action Classifier for Hedwiq Agent - Phase 1 of Real-Time Actions
+Action Classifier for Luframe Agent - Phase 1 of Real-Time Actions
 
 Classifies action items from meeting insights by execution type (email, task, calendar).
 Receives action_item insights from InsightAnalyzer and enriches them with:
@@ -7,7 +7,7 @@ Receives action_item insights from InsightAnalyzer and enriches them with:
 - Metadata extraction (recipient hints, urgency, etc.)
 
 Publishing:
-- Publishes to hedwiq.action topic for frontend consumption
+- Publishes to luframe.action topic for frontend consumption
 """
 
 import asyncio
@@ -39,13 +39,13 @@ from prompts.action_classification import (
 from insight_analyzer import TranscriptEntry
 from utils import clean_llm_json_response
 
-logger = logging.getLogger("hedwiq-action-classifier")
+logger = logging.getLogger("luframe-action-classifier")
 
 # Type alias for email action callback
 EmailActionCallback = Callable[[ClassifiedAction], Awaitable[None]]
 
 # LiveKit topic for classified actions
-ACTION_TOPIC = "hedwiq.action"
+ACTION_TOPIC = "luframe.action"
 
 # Classification constants
 MAX_CONTEXT_BUFFER = 10        # Number of recent transcript entries to use as context
@@ -64,7 +64,7 @@ class ActionClassifier:
     1. Builds context from recent transcript
     2. Classifies using LLM
     3. Extracts metadata (recipient, urgency, etc.)
-    4. Publishes enriched action to hedwiq.action topic
+    4. Publishes enriched action to luframe.action topic
     5. (Phase 3) Notifies EmailDraftGenerator for email-type actions
 
     Integration:
@@ -73,7 +73,7 @@ class ActionClassifier:
     - EmailDraftGenerator receives email-type actions via callback
 
     Publishing:
-    - Topic: hedwiq.action
+    - Topic: luframe.action
     - Attributes: action_type, requires_email, urgency
 
     Resource Management:

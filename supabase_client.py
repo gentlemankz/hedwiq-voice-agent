@@ -1,5 +1,5 @@
 """
-Supabase Client for Hedwiq Agent
+Supabase Client for Luframe Agent
 
 Provides functionality to download documents from Supabase Storage.
 This enables the agent to process documents that were uploaded via
@@ -17,7 +17,7 @@ import os
 import logging
 from typing import Optional, Tuple
 
-logger = logging.getLogger("hedwiq-supabase")
+logger = logging.getLogger("luframe-supabase")
 
 # Storage bucket name (must match frontend STORAGE_BUCKETS.DOCUMENTS)
 STORAGE_BUCKET = "meeting-documents"

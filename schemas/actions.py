@@ -1,5 +1,5 @@
 """
-Action Schemas for Hedwiq Agent
+Action Schemas for Luframe Agent
 
 Defines the data models for action classification feature (Phase 1 of Real-Time Actions).
 Actions are extracted from meeting insights and classified by execution type.
@@ -152,7 +152,7 @@ class ClassifiedAction(BaseModel):
     - requires_email: Quick flag for email-related actions
     - original_insight_id: Links back to the source insight
 
-    Published to the hedwiq.action topic for frontend consumption.
+    Published to the luframe.action topic for frontend consumption.
     """
 
     id: str = Field(default_factory=generate_action_id)

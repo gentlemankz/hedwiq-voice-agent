@@ -1,5 +1,5 @@
 """
-Insight Extraction Prompts for Hedwiq Agent
+Insight Extraction Prompts for Luframe Agent
 
 Contains carefully crafted prompts for extracting insights from meeting transcripts.
 

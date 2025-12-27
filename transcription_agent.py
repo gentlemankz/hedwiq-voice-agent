@@ -1,5 +1,5 @@
 """
-Hedwiq Transcription Agent
+Luframe Transcription Agent
 
 A LiveKit agent that provides real-time transcription for all meeting participants.
 The agent joins the room invisibly and transcribes all audio, publishing transcriptions
@@ -27,7 +27,7 @@ load_dotenv(dotenv_path=Path(__file__).parent / ".env")
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("hedwiq-transcription")
+logger = logging.getLogger("luframe-transcription")
 
 
 class ParticipantTranscriber:

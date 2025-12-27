@@ -1,5 +1,5 @@
 """
-Shared STT configuration helpers for Hedwiq agents.
+Shared STT configuration helpers for Luframe agents.
 
 Centralizing these keeps the transcription-only agent and the
 insight-enabled agent in sync and makes it easier to swap

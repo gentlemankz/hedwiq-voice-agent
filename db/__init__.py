@@ -1,5 +1,5 @@
 """
-Database utilities for Hedwiq Agent
+Database utilities for Luframe Agent
 
 Provides database access for agenda tracking and other features
 that need to interact with the frontend's PostgreSQL database.

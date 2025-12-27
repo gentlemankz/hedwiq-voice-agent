@@ -1,8 +1,8 @@
 """
-Document Referencer for Hedwiq Agent - Phase 3 Implementation
+Document Referencer for Luframe Agent - Phase 3 Implementation
 
 Provides real-time document reference detection using hybrid retrieval + LLM alignment.
-Integrates with hedwiq_agent.py's VAD/transcript flow.
+Integrates with luframe_agent.py's VAD/transcript flow.
 
 Phase 3 implements:
 - Pre-filter (no LLM) to skip irrelevant segments
@@ -17,7 +17,7 @@ Pipeline:
                      (no LLM)        (~20ms)              (~200ms)
 
 Usage:
-    # In hedwiq_agent.py
+    # In luframe_agent.py
     referencer = DocumentReferencer(room, room_id, document_store)
     await referencer.start()
 
@@ -60,11 +60,11 @@ from prompts.document_reference import (
     ALIGNMENT_MAX_RETRIES,
 )
 
-logger = logging.getLogger("hedwiq-document-referencer")
+logger = logging.getLogger("luframe-document-referencer")
 
 # LiveKit text stream topics
-DOCUMENT_REFERENCE_TOPIC = "hedwiq.document_reference"  # Phase 3: confirmed references
-DOCUMENT_CANDIDATE_TOPIC = "hedwiq.document_candidate"  # Phase 2: candidates for preview
+DOCUMENT_REFERENCE_TOPIC = "luframe.document_reference"  # Phase 3: confirmed references
+DOCUMENT_CANDIDATE_TOPIC = "luframe.document_candidate"  # Phase 2: candidates for preview
 
 
 @dataclass
@@ -82,7 +82,7 @@ class DocumentReferencer:
     """
     Real-time document reference detection using hybrid retrieval + LLM alignment.
 
-    This class integrates with hedwiq_agent.py to:
+    This class integrates with luframe_agent.py to:
     1. Receive final transcript segments from VAD flow
     2. Apply lightweight pre-filter (no LLM)
     3. Run hybrid retrieval (BM25 + embeddings)
@@ -239,7 +239,7 @@ class DocumentReferencer:
         """
         Called when a final transcript segment is received from VAD.
 
-        This is the main entry point from hedwiq_agent.py's ParticipantTranscriber.
+        This is the main entry point from luframe_agent.py's ParticipantTranscriber.
 
         Args:
             segment_id: Unique segment ID (e.g., "user1-123")

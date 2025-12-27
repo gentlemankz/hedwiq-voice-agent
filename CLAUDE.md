@@ -2,13 +2,13 @@
 
 ## Project Overview
 
-Hedwiq Agent - LiveKit agent for real-time meeting transcription, insight extraction, document reference detection, and agenda tracking.
+Luframe Agent - LiveKit agent for real-time meeting transcription, insight extraction, document reference detection, and agenda tracking.
 
 ## Commands
 
 ```bash
 # Development
-python hedwiq_agent.py dev          # Full agent (transcription + insights + doc reference + agenda)
+python luframe_agent.py dev          # Full agent (transcription + insights + doc reference + agenda)
 python transcription_agent.py dev   # Transcription only
 python document_api.py              # Document upload API (separate process)
 
@@ -21,17 +21,17 @@ uv venv && source .venv/bin/activate && uv pip install -r requirements.txt
 ```
 Audio → VAD/Deepgram STT → lk.transcription topic
                       ↓
-              InsightAnalyzer → hedwiq.insight topic
+              InsightAnalyzer → luframe.insight topic
                       ↓                    ↓
             DocumentReferencer      ActionClassifier (Phase 1 Real-Time Actions):
             (Phase 3 Pipeline):         [Context Buffer] → [LLM Classification] → [Publish]
                 [Pre-filter] →                                    ↓
-                [Hybrid Retrieval] →               hedwiq.action topic (classified actions)
+                [Hybrid Retrieval] →               luframe.action topic (classified actions)
                 [LLM Alignment] →                                 ↓
                 [Dedupe]                          EmailDraftGenerator (Phase 3 Real-Time Actions):
                       ↓                              [Meeting Context] → [LLM Draft Generation]
-               hedwiq.document_reference                              ↓
-               topic (confirmed refs)                    hedwiq.email_draft topic (AI drafts)
+               luframe.document_reference                              ↓
+               topic (confirmed refs)                    luframe.email_draft topic (AI drafts)
                       ↑
 Document API → PersistentDocumentStore → HybridRetriever (BM25 + Embeddings + RRF)
       ↑
@@ -42,7 +42,7 @@ Supabase Storage (downloads PDF from frontend uploads)
                 [Full Transcript Buffer] → [LLM Full Context Analysis] → [Execute Transition]
                      (all entries)              (~500ms)                   (trust LLM)
                       ↓
-               hedwiq.agenda topic (topic_started, topic_completed, etc.)
+               luframe.agenda topic (topic_started, topic_completed, etc.)
 ```
 
 ### Agenda Detection Flow (Phase 4 - Trust-Based LLM)
@@ -54,7 +54,7 @@ Transcript → Full Buffer → LLM Full Context Analysis → Execute Transition
                     Trust LLM decision - no artificial constraints
 ```
 
-**IMPORTANT**: Agent uses `request_fnc` to set identity prefix to "hedwiq" (required for frontend event filtering). Do NOT use `agent_name` in WorkerOptions - that disables automatic dispatch!
+**IMPORTANT**: Agent uses `request_fnc` to set identity prefix to "luframe" (required for frontend event filtering). Do NOT use `agent_name` in WorkerOptions - that disables automatic dispatch!
 
 ### Action Classification Flow (Phase 1 - Real-Time Actions)
 ```
@@ -64,7 +64,7 @@ action_item Insight → InsightAnalyzer callback → ActionClassifier
                                                         ↓
                                     LLM Classification (action type + metadata)
                                                         ↓
-                                    hedwiq.action topic (classified actions)
+                                    luframe.action topic (classified actions)
 ```
 
 **Action Types:**
@@ -86,7 +86,7 @@ Frontend PreJoin → Supabase Storage → POST /documents/process → Agent proc
 
 | File | Purpose |
 |------|---------|
-| `hedwiq_agent.py` | Main agent: STT + LLM insights + document reference + agenda + action classification + email drafts |
+| `luframe_agent.py` | Main agent: STT + LLM insights + document reference + agenda + action classification + email drafts |
 | `action_classifier.py` | Phase 1 (Real-Time Actions): Action item classification by execution type |
 | `email_draft_generator.py` | Phase 3 (Real-Time Actions): AI-generated email drafts from email-type actions |
 | `agenda_tracker.py` | Phase 4: Trust-based LLM topic detection + late joiner sync |
@@ -148,7 +148,7 @@ Required in `.env`:
 2. Notifies EmailDraftGenerator via callback
 3. EmailDraftGenerator builds context from meeting info + transcript
 4. LLM generates professional email draft (subject, recipients, body)
-5. Draft published to `hedwiq.email_draft` topic for frontend
+5. Draft published to `luframe.email_draft` topic for frontend
 
 **Email Types:**
 - `email_followup` - Following up on discussion points

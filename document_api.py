@@ -1,5 +1,5 @@
 """
-Document Upload API for Hedwiq Agent
+Document Upload API for Luframe Agent
 
 A FastAPI server that handles document upload and processing.
 Run alongside the main LiveKit agent to provide HTTP endpoints
@@ -47,12 +47,12 @@ from supabase_client import (
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("hedwiq-document-api")
+logger = logging.getLogger("luframe-document-api")
 
 # Initialize FastAPI app
 app = FastAPI(
-    title="Hedwiq Document API",
-    description="Document upload and processing API for Hedwiq meetings",
+    title="Luframe Document API",
+    description="Document upload and processing API for Luframe meetings",
     version="1.0.0"
 )
 
@@ -567,7 +567,7 @@ async def delete_document(
 @app.get("/health")
 async def health_check():
     """Health check endpoint."""
-    return {"status": "healthy", "service": "hedwiq-document-api"}
+    return {"status": "healthy", "service": "luframe-document-api"}
 
 
 if __name__ == "__main__":
@@ -576,7 +576,7 @@ if __name__ == "__main__":
     port = int(os.getenv("DOCUMENT_API_PORT", "8000"))
     host = os.getenv("DOCUMENT_API_HOST", "0.0.0.0")
 
-    logger.info(f"Starting Hedwiq Document API on {host}:{port}")
+    logger.info(f"Starting Luframe Document API on {host}:{port}")
 
     uvicorn.run(
         "document_api:app",

@@ -1,5 +1,5 @@
 """
-Agenda Detection Prompts for Hedwiq Agent - Phase 4 Implementation
+Agenda Detection Prompts for Luframe Agent - Phase 4 Implementation
 
 Contains prompts for detecting topic transitions during meetings.
 The agent analyzes transcripts to determine when the discussion has
