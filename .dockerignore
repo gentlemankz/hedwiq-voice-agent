@@ -1,0 +1,51 @@
+# Python cache and bytecode
+__pycache__
+*.py[cod]
+*$py.class
+*.pyo
+
+# Virtual environments (will be created in container)
+venv/
+.venv/
+env/
+ENV/
+
+# Development files
+.env*
+!.env.example
+*.log
+
+# IDE and editor files
+.idea
+.vscode
+*.swp
+*.swo
+
+# Git
+.git
+.gitignore
+
+# Documentation (not needed in production)
+*.md
+docs/
+
+# Testing
+tests/
+pytest.ini
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Data files (runtime generated)
+*.sqlite
+*.db
+data/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Build artifacts
+*.egg-info/
+dist/
+build/
