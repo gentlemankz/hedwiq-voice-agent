@@ -28,6 +28,7 @@ Phase 4 additions:
 
 import asyncio
 import logging
+import os
 import time
 from pathlib import Path
 from typing import Dict, Optional
@@ -197,7 +198,15 @@ class LuframeAgent:
 
         # Initialize document reference detection (Phase 3)
         # Uses persistent store and hybrid retrieval
-        self.document_store = document_store or PersistentDocumentStore(backend="sqlite")
+        # Read backend config from environment (set in docker-compose.yml)
+        doc_backend = os.getenv("DOCUMENT_STORE_BACKEND", "sqlite")
+        doc_db_path = os.getenv("DB_PATH")
+        doc_storage_dir = os.getenv("DOCUMENT_STORAGE_DIR", "/app_data/document_storage")
+        self.document_store = document_store or PersistentDocumentStore(
+            backend=doc_backend,
+            db_path=doc_db_path,
+            storage_dir=doc_storage_dir,
+        )
         self.retriever_manager = retriever_manager or RoomRetrieverManager.get_instance(self.document_store)
         self.document_referencer = document_referencer or DocumentReferencer(
             room=room,
