@@ -67,9 +67,11 @@ from utils.identity import (
     is_agent_identity,
     get_meeting_owner_from_room,
 )
+from secret_manager import load_secrets_to_env
 
-# Load environment variables
-load_dotenv(dotenv_path=Path(__file__).parent / ".env")
+# Load secrets from Docker secrets files (production) first, then .env (development)
+load_secrets_to_env()  # Loads /run/secrets/* into environment variables
+load_dotenv(dotenv_path=Path(__file__).parent / ".env")  # Fills in any missing from .env
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)

@@ -72,10 +72,12 @@ app.add_middleware(
 # Initialize services
 DOCUMENT_STORE_BACKEND = os.getenv("DOCUMENT_STORE_BACKEND", "sqlite")
 REDIS_URL = os.getenv("REDIS_URL")
+DB_PATH = os.getenv("DB_PATH", "/app/documents.db")
 
 document_store = PersistentDocumentStore(
     backend=DOCUMENT_STORE_BACKEND,
-    redis_url=REDIS_URL
+    redis_url=REDIS_URL,
+    db_path=DB_PATH
 )
 retriever_manager = RoomRetrieverManager.get_instance(document_store)
 upload_service = DocumentUploadService(
