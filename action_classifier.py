@@ -37,7 +37,7 @@ from prompts.action_classification import (
     CLASSIFICATION_MAX_RETRIES,
 )
 from insight_analyzer import TranscriptEntry
-from utils import clean_llm_json_response
+from llm_utils import clean_llm_json_response
 
 logger = logging.getLogger("luframe-action-classifier")
 

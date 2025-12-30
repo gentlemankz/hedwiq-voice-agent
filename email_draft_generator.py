@@ -45,7 +45,7 @@ from schemas.email_draft import (
 )
 from prompts.email_draft_generation import format_email_draft_prompt
 from insight_analyzer import TranscriptEntry
-from utils import clean_llm_json_response
+from llm_utils import clean_llm_json_response
 from usage_reporter import get_usage_reporter
 
 # Shared identity utilities (for billing attribution)

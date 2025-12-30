@@ -142,14 +142,14 @@ def load_secrets_to_env() -> None:
 # Usage examples:
 #
 # Option 1: Direct secret access
-# from secrets import get_secret
+# from secret_manager import get_secret
 # api_key = get_secret("DEEPGRAM_API_KEY")
 #
 # Option 2: Load all secrets at startup
-# from secrets import get_all_secrets
+# from secret_manager import get_all_secrets
 # secrets = get_all_secrets()
 # api_key = secrets["deepgram_api_key"]
 #
 # Option 3: Load into environment (for libraries that use os.environ)
-# from secrets import load_secrets_to_env
+# from secret_manager import load_secrets_to_env
 # load_secrets_to_env()  # Call once at startup

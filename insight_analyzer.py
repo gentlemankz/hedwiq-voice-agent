@@ -24,7 +24,7 @@ from prompts.insight_extraction import (
     INSIGHT_EXTRACTION_SYSTEM_PROMPT,
     INSIGHT_EXTRACTION_USER_TEMPLATE,
 )
-from utils import clean_llm_json_response
+from llm_utils import clean_llm_json_response
 
 # Type alias for action item callback
 ActionItemCallback = Callable[[Insight, str], Awaitable[None]]
