@@ -123,6 +123,8 @@ class LuframeAgent:
         self._last_human_leave_time: Optional[float] = None
         self._human_participant_count: int = 0
         self._meeting_owner_id: Optional[str] = None
+        # SECURITY FIX: Verified owner from database (not first-joiner assumption)
+        self._verified_meeting_owner_id: Optional[str] = None
 
         # Periodic usage reporting - report every N minutes to prevent data loss on crash
         # This ensures minutes are captured even if agent is killed without graceful shutdown
@@ -267,6 +269,10 @@ class LuframeAgent:
         # Initialize presence tracking for participants already in the room
         # This handles the case where agent joins a room with existing humans
         self._initialize_existing_participants()
+
+        # SECURITY FIX: Fetch verified meeting owner from database
+        # This prevents billing the wrong person if an attacker joins first
+        asyncio.create_task(self._fetch_verified_meeting_owner())
 
         # Check and log meeting limits for monitoring (enforcement is in frontend)
         # This runs async in background to not delay agent startup
@@ -562,18 +568,58 @@ class LuframeAgent:
         """
         Get the meeting owner's user_id for usage tracking.
 
-        Uses the shared identity module (utils.identity) for proper UUID extraction.
-        The owner is the first human (non-agent) participant and is responsible
-        for the meeting minutes billing.
+        SECURITY FIX #7: Now ONLY uses verified owner from database.
+        The first-joiner fallback has been removed to prevent billing attacks
+        where an attacker joins first to become the billing target.
+
+        If the database lookup fails, we return None and usage is NOT billed.
+        This is fail-closed behavior - better to miss billing than bill the wrong person.
 
         Returns:
             User ID of the meeting owner, or None if not determinable
         """
-        # Use shared utility which handles caching
-        owner = get_meeting_owner_from_room(self.room, self._meeting_owner_id)
-        if owner and not self._meeting_owner_id:
-            self._meeting_owner_id = owner
-        return owner
+        # ONLY use verified owner from database - no fallbacks
+        if self._verified_meeting_owner_id:
+            return self._verified_meeting_owner_id
+
+        # SECURITY FIX #7: Do NOT fall back to first-joiner
+        # If we don't have a verified owner, log error and return None
+        # The meeting will not be billed, but this is safer than billing the wrong person
+        logger.error(
+            f"[LuframeAgent] SECURITY: No verified owner for room {self.room_id}. "
+            "Meeting usage will NOT be billed to prevent billing attacks. "
+            "Ensure meetings are created through the frontend API."
+        )
+        return None
+
+    async def _fetch_verified_meeting_owner(self) -> Optional[str]:
+        """
+        Fetch the verified meeting owner from the database.
+
+        SECURITY FIX: This queries the actual meeting host from the database
+        rather than assuming the first joiner is the host.
+
+        Returns:
+            Verified host user ID, or None if not determinable
+        """
+        try:
+            reporter = get_usage_reporter()
+            verified_owner = await reporter.get_meeting_host(self.room_id)
+
+            if verified_owner:
+                self._verified_meeting_owner_id = verified_owner
+                self._meeting_owner_id = verified_owner  # Also update legacy cache
+                logger.info(f"[LuframeAgent] Verified meeting owner from DB: {verified_owner}")
+                return verified_owner
+            else:
+                logger.warning(
+                    f"[LuframeAgent] Could not verify meeting owner for room {self.room_id}. "
+                    "Will fall back to first-joiner logic."
+                )
+                return None
+        except Exception as e:
+            logger.error(f"[LuframeAgent] Error fetching verified owner: {e}")
+            return None
 
     def _initialize_existing_participants(self):
         """
@@ -582,6 +628,9 @@ class LuframeAgent:
         Called during start() to handle the case where agent joins a room
         that already has human participants. Without this, _first_human_join_time
         would stay None and billing would be skipped.
+
+        SECURITY FIX #7: No longer caches meeting owner from first participant.
+        Owner is ONLY set from verified database lookup.
         """
         for participant in self.room.remote_participants.values():
             # Skip agent participants
@@ -599,12 +648,9 @@ class LuframeAgent:
                     f"setting join time to {self._first_human_join_time:.0f}"
                 )
 
-            # Cache the meeting owner (first human)
-            if not self._meeting_owner_id:
-                user_id = extract_user_id_from_identity(participant.identity)
-                if user_id:
-                    self._meeting_owner_id = user_id
-                    logger.info(f"[LuframeAgent] Meeting owner from existing participant: {user_id}")
+            # SECURITY FIX #7: Do NOT cache meeting owner from first participant
+            # The owner MUST come from the verified database lookup only
+            # This prevents billing attacks where attacker joins first
 
         if self._human_participant_count > 0:
             logger.info(

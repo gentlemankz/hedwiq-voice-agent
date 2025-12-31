@@ -35,16 +35,80 @@ INTERNAL_SERVICE_TOKEN = os.getenv("INTERNAL_SERVICE_TOKEN", "")
 
 # Environment flag to bypass usage checks in development.
 # Set BYPASS_USAGE_CHECKS=true for local testing without frontend API.
-# Uses NODE_ENV for consistency with frontend (defaults to "development" if not set).
 BYPASS_USAGE_CHECKS = os.getenv("BYPASS_USAGE_CHECKS", "").lower() == "true"
-IS_DEVELOPMENT = os.getenv("NODE_ENV", "development").lower() != "production"
 
-# C2 Fix: CRITICAL production guard to prevent billing bypass
+
+def detect_production_environment() -> tuple[bool, list[str]]:
+    """
+    SECURITY FIX #4: Multi-factor production detection.
+
+    NODE_ENV alone is not reliable because it can be accidentally misconfigured.
+    We check multiple indicators to determine if we're in production.
+
+    Returns:
+        Tuple of (is_production, list_of_indicators)
+    """
+    indicators: list[str] = []
+
+    # Check NODE_ENV
+    if os.getenv("NODE_ENV", "").lower() == "production":
+        indicators.append("NODE_ENV=production")
+
+    # Check platform-specific env vars
+    if os.getenv("RAILWAY_ENVIRONMENT", "").lower() == "production":
+        indicators.append("RAILWAY_ENVIRONMENT=production")
+
+    if os.getenv("VERCEL_ENV", "").lower() == "production":
+        indicators.append("VERCEL_ENV=production")
+
+    # Check explicit production flag
+    if os.getenv("PRODUCTION_MODE", "").lower() == "true":
+        indicators.append("PRODUCTION_MODE=true")
+
+    # Check for production-like configuration
+    # If LIVEKIT_URL is a non-localhost URL, assume production
+    livekit_url = os.getenv("LIVEKIT_URL", "")
+    if (
+        livekit_url
+        and "localhost" not in livekit_url
+        and "127.0.0.1" not in livekit_url
+        and livekit_url.startswith("wss://")
+    ):
+        indicators.append("LIVEKIT_URL=production-domain")
+
+    # Check for production database (non-localhost)
+    db_url = os.getenv("DATABASE_URL", "")
+    if (
+        db_url
+        and "localhost" not in db_url
+        and "127.0.0.1" not in db_url
+        and "::1" not in db_url
+    ):
+        indicators.append("DATABASE_URL=remote")
+
+    return (len(indicators) > 0, indicators)
+
+
+IS_PRODUCTION, _production_indicators = detect_production_environment()
+IS_DEVELOPMENT = not IS_PRODUCTION and os.getenv("NODE_ENV", "development").lower() != "production"
+
+# Log production detection result at startup
+if IS_PRODUCTION:
+    logger.info(
+        f"[UsageReporter] Production environment detected via: {', '.join(_production_indicators)}"
+    )
+else:
+    logger.info(
+        "[UsageReporter] Development environment - billing bypass may be enabled"
+    )
+
+# SECURITY FIX #4: CRITICAL production guard to prevent billing bypass
 # This check runs at module load time to fail fast
 if BYPASS_USAGE_CHECKS:
-    if not IS_DEVELOPMENT:
+    if IS_PRODUCTION:
         raise RuntimeError(
-            "FATAL: BYPASS_USAGE_CHECKS=true is not allowed in production. "
+            f"FATAL: BYPASS_USAGE_CHECKS=true is not allowed in production. "
+            f"Production detected via: {', '.join(_production_indicators)}. "
             "This would disable all billing. Remove this environment variable."
         )
     else:
@@ -64,6 +128,9 @@ STORAGE_BYTES = "storage-bytes"
 FREE_TIER_MINUTES_LIMIT = 300  # Default free tier monthly minutes
 DEV_EMAIL_DRAFTS_LIMIT = 10   # Synthetic limit for dev testing
 PARTICIPANT_WAIT_TIMEOUT_SECONDS = 3.0  # Wait time for participant identification
+
+# SECURITY FIX (High #8): Maximum session duration (aligned with frontend)
+MAX_SESSION_MINUTES = 480  # 8 hours max per session (aligned with frontend cap)
 
 # Retry configuration for usage reporting
 MAX_RETRY_ATTEMPTS = 3  # Number of retry attempts
@@ -282,6 +349,16 @@ class UsageReporter:
         if minutes <= 0:
             logger.debug(f"[UsageReporter] Skipping report for {minutes} minutes (<=0)")
             return UsageReportResult(success=True, value=0)
+
+        # SECURITY FIX (High #8): Cap minutes to prevent abuse
+        # This aligns with the frontend's MAX_SESSION_DURATION_SECONDS validation
+        original_minutes = minutes
+        if minutes > MAX_SESSION_MINUTES:
+            logger.warning(
+                f"[UsageReporter] DURATION_CAP: Capping minutes from {minutes} to {MAX_SESSION_MINUTES} "
+                f"for user {user_id}, room {room_id}. Investigate for potential abuse."
+            )
+            minutes = MAX_SESSION_MINUTES
 
         metadata = {"source": source, "timestamp": asyncio.get_event_loop().time()}
         if room_id:
@@ -509,6 +586,58 @@ class UsageReporter:
                 remaining_minutes=0,
                 reason="Service temporarily unavailable",
             )
+
+    async def get_meeting_host(self, room_id: str) -> Optional[str]:
+        """
+        Get the actual meeting host from the database.
+
+        SECURITY FIX: This replaces the "first joiner is host" assumption which
+        could be exploited by attackers joining first to become the billing target.
+
+        Args:
+            room_id: The LiveKit room ID
+
+        Returns:
+            The actual host's user ID, or None if not found
+        """
+        if not self.service_token:
+            logger.warning(
+                "[UsageReporter] INTERNAL_SERVICE_TOKEN not configured. "
+                "Cannot fetch meeting host."
+            )
+            return None
+
+        try:
+            client = await self._get_client()
+
+            response = await client.get(
+                f"{self.frontend_url}/api/internal/meeting-host",
+                params={"roomId": room_id},
+                headers=self._get_headers(),
+            )
+
+            if response.status_code == 200:
+                data = response.json()
+                host_id = data.get("hostId")
+                if host_id:
+                    logger.info(f"[UsageReporter] Got meeting host from DB: {host_id}")
+                    return host_id
+                return None
+            elif response.status_code == 404:
+                logger.warning(f"[UsageReporter] Meeting not found for room {room_id}")
+                return None
+            else:
+                logger.error(
+                    f"[UsageReporter] Failed to get meeting host: HTTP {response.status_code}"
+                )
+                return None
+
+        except httpx.TimeoutException:
+            logger.error("[UsageReporter] Timeout getting meeting host")
+            return None
+        except Exception as e:
+            logger.error(f"[UsageReporter] Error getting meeting host: {e}")
+            return None
 
     async def check_email_draft_limits(self, user_id: str) -> tuple[bool, dict]:
         """
