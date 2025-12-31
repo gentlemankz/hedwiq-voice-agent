@@ -124,6 +124,12 @@ class LuframeAgent:
         self._human_participant_count: int = 0
         self._meeting_owner_id: Optional[str] = None
 
+        # Periodic usage reporting - report every N minutes to prevent data loss on crash
+        # This ensures minutes are captured even if agent is killed without graceful shutdown
+        self._periodic_report_task: Optional[asyncio.Task] = None
+        self._last_reported_minutes: int = 0  # Track what we've already reported
+        self._usage_report_interval_seconds: int = 300  # Report every 5 minutes
+
         # Initialize VAD (Silero) for proper turn detection
         # This prevents transcription fragmentation by detecting natural speech boundaries
         # For meeting transcription, we use longer silence duration to capture complete thoughts
@@ -201,7 +207,7 @@ class LuframeAgent:
         # Read backend config from environment (set in docker-compose.yml)
         doc_backend = os.getenv("DOCUMENT_STORE_BACKEND", "sqlite")
         doc_db_path = os.getenv("DB_PATH")
-        doc_storage_dir = os.getenv("DOCUMENT_STORAGE_DIR", "/app_data/document_storage")
+        doc_storage_dir = os.getenv("DOCUMENT_STORAGE_DIR", str(Path(__file__).parent / "document_storage"))
         self.document_store = document_store or PersistentDocumentStore(
             backend=doc_backend,
             db_path=doc_db_path,
@@ -266,6 +272,10 @@ class LuframeAgent:
         # This runs async in background to not delay agent startup
         asyncio.create_task(self._check_meeting_limits_async())
 
+        # Start periodic usage reporting to prevent data loss on crash
+        # Reports incremental minutes every 5 minutes during the meeting
+        self._periodic_report_task = asyncio.create_task(self._periodic_usage_reporter())
+
         # Start document referencer (Phase 3)
         await self.document_referencer.start()
 
@@ -300,6 +310,15 @@ class LuframeAgent:
 
     async def stop(self):
         """Stop all transcribers, document referencer, agenda tracker, action classifier, and email draft generator."""
+        # Cancel periodic usage reporter first
+        if self._periodic_report_task and not self._periodic_report_task.done():
+            self._periodic_report_task.cancel()
+            try:
+                await self._periodic_report_task
+            except asyncio.CancelledError:
+                pass
+            logger.info("[LuframeAgent] Periodic usage reporter stopped")
+
         # M3 Fix: If humans are still present when agent stops (e.g., shutdown, crash),
         # explicitly set the leave time to now for accurate billing.
         # Without this, _last_human_leave_time would be None and _report_meeting_usage
@@ -311,8 +330,9 @@ class LuframeAgent:
                 f"still present, setting leave time to {self._last_human_leave_time:.0f}"
             )
 
-        # Report meeting minutes usage to Polar for billing
-        await self._report_meeting_usage()
+        # Report remaining meeting minutes usage to Polar for billing
+        # This reports only minutes not yet reported by periodic reporter
+        await self._report_meeting_usage(final=True)
 
         # Stop document referencer
         await self.document_referencer.stop()
@@ -331,9 +351,60 @@ class LuframeAgent:
             await transcriber.stop()
         self.transcribers.clear()
 
-    async def _report_meeting_usage(self):
+    async def _periodic_usage_reporter(self):
+        """
+        Periodically report meeting minutes during the meeting.
+
+        This ensures that even if the agent crashes or is killed without graceful
+        shutdown, most of the meeting minutes will have been reported.
+
+        Reports incremental minutes (delta since last report) every N minutes.
+        """
+        logger.info(
+            f"[LuframeAgent] Periodic usage reporter started "
+            f"(interval: {self._usage_report_interval_seconds}s)"
+        )
+
+        try:
+            while True:
+                await asyncio.sleep(self._usage_report_interval_seconds)
+
+                # Only report if humans are/were in the meeting
+                if self._first_human_join_time is None:
+                    continue
+
+                # Calculate current total minutes
+                end_time = self._last_human_leave_time or time.time()
+                duration_seconds = max(0, end_time - self._first_human_join_time)
+                total_minutes = int(duration_seconds / 60)
+
+                # Calculate delta (minutes not yet reported)
+                minutes_to_report = total_minutes - self._last_reported_minutes
+
+                if minutes_to_report > 0:
+                    await self._report_meeting_usage(
+                        final=False,
+                        minutes_override=minutes_to_report
+                    )
+                    self._last_reported_minutes = total_minutes
+                    logger.info(
+                        f"[LuframeAgent] Periodic report: {minutes_to_report} minutes "
+                        f"(total reported so far: {self._last_reported_minutes})"
+                    )
+
+        except asyncio.CancelledError:
+            logger.info("[LuframeAgent] Periodic usage reporter cancelled")
+            raise
+
+    async def _report_meeting_usage(self, final: bool = False, minutes_override: Optional[int] = None):
         """
         Report meeting minutes usage to Polar for billing.
+
+        Args:
+            final: If True, this is the final report at meeting end. Reports only
+                   unreported minutes (total - already_reported).
+            minutes_override: If provided, report this exact number of minutes
+                              (used by periodic reporter).
 
         C4 Fix: Bills based on actual human participant presence, not agent lifetime.
         Duration is measured from first human join to last human leave.
@@ -341,7 +412,20 @@ class LuframeAgent:
         H2 Fix: Duration is clamped to API limits (1-1440 minutes).
 
         M2 Fix: Handles negative duration from clock skew.
+
+        Incremental Reporting Fix: Reports delta minutes during meeting to prevent
+        data loss on crash.
         """
+        # Debug: Log entry into this function
+        logger.debug(
+            f"[LuframeAgent] _report_meeting_usage called: "
+            f"final={final}, minutes_override={minutes_override}, "
+            f"first_join={self._first_human_join_time}, "
+            f"last_leave={self._last_human_leave_time}, "
+            f"human_count={self._human_participant_count}, "
+            f"owner_id={self._meeting_owner_id}"
+        )
+
         # No humans ever joined - nothing to bill
         if self._first_human_join_time is None:
             logger.info(
@@ -358,7 +442,31 @@ class LuframeAgent:
 
         # H2 fix: Clamp duration to API limits (1-1440 minutes = 24 hours)
         # Round to nearest minute, minimum 1, maximum 1440
-        duration_minutes = max(1, min(1440, int(duration_seconds / 60 + 0.5)))
+        total_duration_minutes = max(1, min(1440, int(duration_seconds / 60 + 0.5)))
+
+        logger.debug(
+            f"[LuframeAgent] Duration calculation: "
+            f"start={self._first_human_join_time:.0f}, end={end_time:.0f}, "
+            f"duration_seconds={duration_seconds:.0f}, total_minutes={total_duration_minutes}, "
+            f"already_reported={self._last_reported_minutes}"
+        )
+
+        # Determine minutes to report
+        if minutes_override is not None:
+            # Explicit override from periodic reporter
+            minutes_to_report = minutes_override
+        elif final:
+            # Final report: only report unreported minutes
+            minutes_to_report = total_duration_minutes - self._last_reported_minutes
+            if minutes_to_report <= 0:
+                logger.info(
+                    f"[LuframeAgent] Final report: all {total_duration_minutes} minutes "
+                    f"already reported via periodic reports"
+                )
+                return
+        else:
+            # Legacy behavior: report full duration (should not happen with new code)
+            minutes_to_report = total_duration_minutes
 
         # Get meeting owner for billing attribution
         user_id = self._get_meeting_owner_id()
@@ -371,28 +479,40 @@ class LuframeAgent:
             )
             return
 
-        # Report usage via UsageReporter
+        logger.info(
+            f"[LuframeAgent] Reporting {minutes_to_report} minutes for user {user_id} "
+            f"(room={self.room_id}, final={final}, source=agent)"
+        )
+
+        # Report usage via UsageReporter (with retry built-in)
         try:
             reporter = get_usage_reporter()
             result = await reporter.report_meeting_minutes(
                 user_id=user_id,
-                minutes=duration_minutes,
+                minutes=minutes_to_report,
                 room_id=self.room_id,
+                source="agent",  # Identify this as agent-reported for deduplication
             )
 
             if result.success:
+                if final:
+                    self._last_reported_minutes = total_duration_minutes
                 logger.info(
-                    f"[LuframeAgent] Reported {duration_minutes} meeting minutes "
-                    f"for user {user_id} in room {self.room_id} "
-                    f"(actual presence: {duration_seconds:.0f}s)"
+                    f"[LuframeAgent] SUCCESS: {'Final' if final else 'Incremental'} report - "
+                    f"{minutes_to_report} minutes for user {user_id} in room {self.room_id} "
+                    f"(total presence: {duration_seconds:.0f}s, total reported: {self._last_reported_minutes})"
                 )
             else:
-                logger.warning(
-                    f"[LuframeAgent] Failed to report meeting usage: {result.error}"
+                logger.error(
+                    f"[LuframeAgent] FAILED to report meeting usage after retries: {result.error} "
+                    f"(user={user_id}, minutes={minutes_to_report}, room={self.room_id})"
                 )
         except Exception as e:
             # Don't fail the shutdown on usage reporting errors
-            logger.error(f"[LuframeAgent] Error reporting meeting usage: {e}")
+            logger.error(
+                f"[LuframeAgent] EXCEPTION during meeting usage report: {type(e).__name__}: {e} "
+                f"(user={user_id}, minutes={minutes_to_report}, room={self.room_id})"
+            )
 
     async def _check_meeting_limits_async(self):
         """

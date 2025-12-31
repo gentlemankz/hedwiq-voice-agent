@@ -65,6 +65,11 @@ FREE_TIER_MINUTES_LIMIT = 300  # Default free tier monthly minutes
 DEV_EMAIL_DRAFTS_LIMIT = 10   # Synthetic limit for dev testing
 PARTICIPANT_WAIT_TIMEOUT_SECONDS = 3.0  # Wait time for participant identification
 
+# Retry configuration for usage reporting
+MAX_RETRY_ATTEMPTS = 3  # Number of retry attempts
+INITIAL_RETRY_DELAY_SECONDS = 1.0  # Initial delay before first retry
+MAX_RETRY_DELAY_SECONDS = 10.0  # Maximum delay between retries
+
 
 # ============================================================================
 # Types
@@ -169,7 +174,19 @@ class UsageReporter:
         Returns:
             UsageReportResult with success status
         """
+        # Debug: Log request details
+        logger.debug(
+            f"[UsageReporter] Preparing request: "
+            f"user={user_id}, event={event_type}, value={value}, "
+            f"url={self.frontend_url}/api/internal/usage, "
+            f"token_configured={bool(self.service_token)}"
+        )
+
         if not self.service_token:
+            logger.error(
+                "[UsageReporter] INTERNAL_SERVICE_TOKEN not configured. "
+                "Cannot report usage. Set this in your environment."
+            )
             return UsageReportResult(
                 success=False,
                 error="INTERNAL_SERVICE_TOKEN not configured",
@@ -187,16 +204,21 @@ class UsageReporter:
             if metadata:
                 payload["metadata"] = metadata
 
+            logger.debug(f"[UsageReporter] Sending POST to {self.frontend_url}/api/internal/usage")
+
             response = await client.post(
                 f"{self.frontend_url}/api/internal/usage",
                 json=payload,
                 headers=self._get_headers(),
             )
 
+            logger.debug(f"[UsageReporter] Response status: {response.status_code}")
+
             if response.status_code == 200 or response.status_code == 201:
                 data = response.json()
                 logger.info(
-                    f"[UsageReporter] Reported {event_type}: {value} for user {user_id}"
+                    f"[UsageReporter] SUCCESS: Reported {event_type}={value} "
+                    f"for user {user_id} (response: {data})"
                 )
                 return UsageReportResult(
                     success=True,
@@ -207,18 +229,31 @@ class UsageReporter:
                 error_data = response.json() if response.content else {}
                 error_msg = error_data.get("error", f"HTTP {response.status_code}")
                 logger.error(
-                    f"[UsageReporter] Failed to report usage: {error_msg}"
+                    f"[UsageReporter] FAILED: HTTP {response.status_code} - {error_msg} "
+                    f"(user={user_id}, event={event_type}, value={value})"
                 )
                 return UsageReportResult(
                     success=False,
                     error=error_msg,
                 )
 
-        except httpx.TimeoutException:
-            logger.error("[UsageReporter] Request timeout")
-            return UsageReportResult(success=False, error="Request timeout")
+        except httpx.TimeoutException as e:
+            logger.error(
+                f"[UsageReporter] TIMEOUT: Request to {self.frontend_url} timed out "
+                f"after {self.timeout}s (user={user_id}, event={event_type})"
+            )
+            return UsageReportResult(success=False, error=f"Request timeout: {e}")
+        except httpx.ConnectError as e:
+            logger.error(
+                f"[UsageReporter] CONNECTION ERROR: Could not connect to {self.frontend_url} "
+                f"(user={user_id}, event={event_type}). Error: {e}"
+            )
+            return UsageReportResult(success=False, error=f"Connection error: {e}")
         except Exception as e:
-            logger.error(f"[UsageReporter] Error reporting usage: {e}")
+            logger.error(
+                f"[UsageReporter] UNEXPECTED ERROR: {type(e).__name__}: {e} "
+                f"(user={user_id}, event={event_type})"
+            )
             return UsageReportResult(success=False, error=str(e))
 
     async def report_meeting_minutes(
@@ -228,9 +263,10 @@ class UsageReporter:
         room_id: Optional[str] = None,
         meeting_id: Optional[str] = None,
         session_id: Optional[str] = None,
+        source: str = "agent",
     ) -> UsageReportResult:
         """
-        Report meeting minutes usage.
+        Report meeting minutes usage with automatic retry on failure.
 
         Args:
             user_id: The user's ID
@@ -238,14 +274,16 @@ class UsageReporter:
             room_id: Optional LiveKit room ID
             meeting_id: Optional meeting ID
             session_id: Optional session ID
+            source: Source identifier for deduplication (default: "agent")
 
         Returns:
             UsageReportResult
         """
         if minutes <= 0:
+            logger.debug(f"[UsageReporter] Skipping report for {minutes} minutes (<=0)")
             return UsageReportResult(success=True, value=0)
 
-        metadata = {}
+        metadata = {"source": source, "timestamp": asyncio.get_event_loop().time()}
         if room_id:
             metadata["roomId"] = room_id
         if meeting_id:
@@ -253,11 +291,76 @@ class UsageReporter:
         if session_id:
             metadata["sessionId"] = session_id
 
-        return await self._report_usage(
+        # Use retry wrapper for reliability
+        return await self._report_usage_with_retry(
             user_id=user_id,
             event_type=MEETING_MINUTES,
             value=minutes,
-            metadata=metadata if metadata else None,
+            metadata=metadata,
+        )
+
+    async def _report_usage_with_retry(
+        self,
+        user_id: str,
+        event_type: str,
+        value: int,
+        metadata: Optional[dict] = None,
+    ) -> UsageReportResult:
+        """
+        Report usage with exponential backoff retry on failure.
+
+        Implements reliable usage reporting to prevent data loss due to
+        transient network failures or service unavailability.
+
+        Args:
+            user_id: The user's ID
+            event_type: Type of usage event
+            value: The value to report
+            metadata: Optional additional metadata
+
+        Returns:
+            UsageReportResult with success status
+        """
+        last_error = None
+        delay = INITIAL_RETRY_DELAY_SECONDS
+
+        for attempt in range(MAX_RETRY_ATTEMPTS):
+            result = await self._report_usage(
+                user_id=user_id,
+                event_type=event_type,
+                value=value,
+                metadata=metadata,
+            )
+
+            if result.success:
+                if attempt > 0:
+                    logger.info(
+                        f"[UsageReporter] Retry succeeded on attempt {attempt + 1} "
+                        f"for {event_type}:{value} user {user_id}"
+                    )
+                return result
+
+            last_error = result.error
+            logger.warning(
+                f"[UsageReporter] Attempt {attempt + 1}/{MAX_RETRY_ATTEMPTS} failed "
+                f"for {event_type}:{value} user {user_id}: {result.error}"
+            )
+
+            # Don't sleep after the last attempt
+            if attempt < MAX_RETRY_ATTEMPTS - 1:
+                logger.debug(f"[UsageReporter] Retrying in {delay:.1f}s...")
+                await asyncio.sleep(delay)
+                # Exponential backoff with cap
+                delay = min(delay * 2, MAX_RETRY_DELAY_SECONDS)
+
+        logger.error(
+            f"[UsageReporter] All {MAX_RETRY_ATTEMPTS} retry attempts failed "
+            f"for {event_type}:{value} user {user_id}. Last error: {last_error}"
+        )
+
+        return UsageReportResult(
+            success=False,
+            error=f"Failed after {MAX_RETRY_ATTEMPTS} attempts: {last_error}",
         )
 
     async def report_email_draft(
@@ -266,33 +369,37 @@ class UsageReporter:
         count: int = 1,
         meeting_id: Optional[str] = None,
         action_type: Optional[str] = None,
+        source: str = "agent",
     ) -> UsageReportResult:
         """
-        Report email draft generation.
+        Report email draft generation with automatic retry on failure.
 
         Args:
             user_id: The user's ID
             count: Number of drafts generated (default 1)
             meeting_id: Optional meeting ID
             action_type: Optional action type that triggered the draft
+            source: Source identifier for deduplication (default: "agent")
 
         Returns:
             UsageReportResult
         """
         if count <= 0:
+            logger.debug(f"[UsageReporter] Skipping email draft report for count={count}")
             return UsageReportResult(success=True, value=0)
 
-        metadata = {}
+        metadata = {"source": source, "timestamp": asyncio.get_event_loop().time()}
         if meeting_id:
             metadata["meetingId"] = meeting_id
         if action_type:
             metadata["actionType"] = action_type
 
-        return await self._report_usage(
+        # Use retry wrapper for reliability
+        return await self._report_usage_with_retry(
             user_id=user_id,
             event_type=EMAIL_DRAFTS,
             value=count,
-            metadata=metadata if metadata else None,
+            metadata=metadata,
         )
 
     async def check_meeting_limits(self, user_id: str) -> tuple[bool, MeetingLimitStatus]:
