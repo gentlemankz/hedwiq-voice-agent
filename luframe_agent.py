@@ -79,6 +79,12 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("luframe-agent")
 
 TRANSCRIPTION_TOPIC = "lk.transcription"
+LIMIT_EXCEEDED_TOPIC = "luframe.limit_exceeded"
+
+# Secondary limit enforcement constants
+LIMIT_CHECK_INTERVAL_SECONDS = 60  # Re-check limits every 60 seconds
+GRACE_PERIOD_SECONDS = 60  # Allow 60 seconds after limit exceeded before stopping
+OWNER_VERIFICATION_TIMEOUT_SECONDS = 30  # SECURITY: Max time to wait for owner verification before fail-closed
 
 
 class LuframeAgent:
@@ -131,6 +137,14 @@ class LuframeAgent:
         self._periodic_report_task: Optional[asyncio.Task] = None
         self._last_reported_minutes: int = 0  # Track what we've already reported
         self._usage_report_interval_seconds: int = 300  # Report every 5 minutes
+
+        # Secondary limit enforcement - agent-side backup to frontend checks
+        self._limit_exceeded: bool = False
+        self._limit_exceeded_time: Optional[float] = None
+        self._limit_check_task: Optional[asyncio.Task] = None
+        self._services_stopped: bool = False
+        # SECURITY FIX: Track when we started waiting for owner verification
+        self._owner_verification_start_time: Optional[float] = None
 
         # Initialize VAD (Silero) for proper turn detection
         # This prevents transcription fragmentation by detecting natural speech boundaries
@@ -274,9 +288,13 @@ class LuframeAgent:
         # This prevents billing the wrong person if an attacker joins first
         asyncio.create_task(self._fetch_verified_meeting_owner())
 
-        # Check and log meeting limits for monitoring (enforcement is in frontend)
+        # Check meeting limits (initial check + secondary enforcement)
         # This runs async in background to not delay agent startup
         asyncio.create_task(self._check_meeting_limits_async())
+
+        # Start periodic limit checking for secondary enforcement
+        # This catches users who exceed limits during a meeting
+        self._limit_check_task = asyncio.create_task(self._periodic_limit_check())
 
         # Start periodic usage reporting to prevent data loss on crash
         # Reports incremental minutes every 5 minutes during the meeting
@@ -324,6 +342,15 @@ class LuframeAgent:
             except asyncio.CancelledError:
                 pass
             logger.info("[LuframeAgent] Periodic usage reporter stopped")
+
+        # Cancel periodic limit checker
+        if self._limit_check_task and not self._limit_check_task.done():
+            self._limit_check_task.cancel()
+            try:
+                await self._limit_check_task
+            except asyncio.CancelledError:
+                pass
+            logger.info("[LuframeAgent] Periodic limit checker stopped")
 
         # M3 Fix: If humans are still present when agent stops (e.g., shutdown, crash),
         # explicitly set the leave time to now for accurate billing.
@@ -497,6 +524,7 @@ class LuframeAgent:
                 user_id=user_id,
                 minutes=minutes_to_report,
                 room_id=self.room_id,
+                session_id=self.room_id,  # Use room_id as session identifier for idempotency dedup
                 source="agent",  # Identify this as agent-reported for deduplication
             )
 
@@ -520,31 +548,79 @@ class LuframeAgent:
                 f"(user={user_id}, minutes={minutes_to_report}, room={self.room_id})"
             )
 
-    async def _check_meeting_limits_async(self):
+    async def _check_meeting_limits_async(self, initial_check: bool = True):
         """
-        Check meeting limits asynchronously for monitoring purposes.
+        Check meeting limits and enforce them as secondary protection.
 
-        This is a non-blocking check that logs the user's remaining minutes.
-        Actual enforcement should be done by the frontend before room creation.
-        The agent does NOT block meetings - it only logs for monitoring.
+        This is a SECONDARY enforcement mechanism - the frontend should check
+        limits before allowing meeting creation. However, if limits are exceeded
+        (e.g., free user bypasses frontend check, or limit reached during meeting),
+        this agent-side check will:
+        1. Publish a limit_exceeded event to notify the frontend
+        2. Stop premium agent services (transcription, insights, etc.)
 
-        This runs after a brief delay to allow the first participant to connect.
+        The meeting room itself stays open (users can still talk) but without
+        AI features. This provides a graceful degradation experience.
+
+        Args:
+            initial_check: If True, waits for participants to connect first.
         """
+        import json
         from usage_reporter import PARTICIPANT_WAIT_TIMEOUT_SECONDS
+
         try:
-            # Wait a bit for participants to connect so we can identify the owner
-            # L1: Use named constant instead of magic number
-            await asyncio.sleep(PARTICIPANT_WAIT_TIMEOUT_SECONDS)
+            if initial_check:
+                # Wait a bit for participants to connect so we can identify the owner
+                await asyncio.sleep(PARTICIPANT_WAIT_TIMEOUT_SECONDS)
 
             user_id = self._get_meeting_owner_id()
             if not user_id:
-                logger.debug(
-                    "[LuframeAgent] No meeting owner identified yet for limit check"
-                )
+                # SECURITY FIX: Fail CLOSED when owner cannot be verified
+                # Start tracking when we first encountered this
+                if self._owner_verification_start_time is None:
+                    self._owner_verification_start_time = time.time()
+                    logger.warning(
+                        f"[LuframeAgent] SECURITY: No meeting owner verified for room {self.room_id}. "
+                        f"Starting {OWNER_VERIFICATION_TIMEOUT_SECONDS}s grace period before fail-closed."
+                    )
+                    return
+
+                # Check if grace period has expired
+                elapsed = time.time() - self._owner_verification_start_time
+                if elapsed >= OWNER_VERIFICATION_TIMEOUT_SECONDS:
+                    logger.error(
+                        f"[LuframeAgent] SECURITY FAIL-CLOSED: Could not verify owner for room {self.room_id} "
+                        f"after {elapsed:.0f}s. Stopping premium services as security precaution. "
+                        "This may be: (1) Meeting created without DB record, (2) DB lookup failure, "
+                        "(3) Malicious attempt to bypass billing."
+                    )
+
+                    # Publish a specific limit_exceeded event for unknown owner
+                    await self._publish_limit_exceeded_event(
+                        user_id="unknown",
+                        tier="free",
+                        minutes_used=0,
+                        minutes_limit=0,
+                        reason="Unable to verify meeting owner - premium services stopped",
+                    )
+
+                    # Stop premium services immediately
+                    if not self._services_stopped:
+                        await self._stop_premium_services()
+                else:
+                    logger.debug(
+                        f"[LuframeAgent] Waiting for owner verification ({elapsed:.0f}s / "
+                        f"{OWNER_VERIFICATION_TIMEOUT_SECONDS}s)"
+                    )
                 return
 
             reporter = get_usage_reporter()
             allowed, status = await reporter.check_meeting_limits(user_id)
+
+            # Owner was successfully verified - reset verification timer
+            if self._owner_verification_start_time is not None:
+                logger.info(f"[LuframeAgent] Owner verified for room {self.room_id}: {user_id}")
+                self._owner_verification_start_time = None
 
             if allowed:
                 logger.info(
@@ -552,17 +628,255 @@ class LuframeAgent:
                     f"{status.remaining_minutes} minutes remaining "
                     f"(tier: {status.tier}, used: {status.minutes_used}/{status.minutes_limit})"
                 )
+                # If services were stopped due to limits, restart them (user upgraded)
+                if self._services_stopped:
+                    logger.info(
+                        f"[LuframeAgent] User {user_id} now has available minutes - "
+                        "restarting premium services (likely upgraded subscription)"
+                    )
+                    await self._restart_premium_services()
+                # Reset limit exceeded state if previously exceeded
+                self._limit_exceeded = False
+                self._limit_exceeded_time = None
             else:
-                # Log warning but don't block - frontend should have enforced this
+                # SECONDARY ENFORCEMENT: Limits exceeded
                 logger.warning(
-                    f"[LuframeAgent] User {user_id} is over meeting limits! "
+                    f"[LuframeAgent] LIMIT ENFORCEMENT: User {user_id} is over meeting limits! "
                     f"Tier: {status.tier}, Used: {status.minutes_used}/{status.minutes_limit}. "
-                    f"Reason: {status.reason}. "
-                    "Meeting continues (enforcement should be in frontend)."
+                    f"Reason: {status.reason}"
                 )
+
+                # Track when limit was first exceeded
+                if not self._limit_exceeded:
+                    self._limit_exceeded = True
+                    self._limit_exceeded_time = time.time()
+
+                # Publish limit exceeded event to frontend
+                await self._publish_limit_exceeded_event(
+                    user_id=user_id,
+                    tier=status.tier,
+                    minutes_used=status.minutes_used,
+                    minutes_limit=status.minutes_limit,
+                    reason=status.reason,
+                )
+
+                # After grace period, stop premium services
+                if self._limit_exceeded_time:
+                    elapsed = time.time() - self._limit_exceeded_time
+                    if elapsed >= GRACE_PERIOD_SECONDS and not self._services_stopped:
+                        logger.warning(
+                            f"[LuframeAgent] Grace period expired ({elapsed:.0f}s), "
+                            "stopping premium services for user over limits"
+                        )
+                        await self._stop_premium_services()
+
         except Exception as e:
             # Don't let limit check failures affect the meeting
-            logger.debug(f"[LuframeAgent] Limit check failed (non-critical): {e}")
+            logger.error(f"[LuframeAgent] Limit check failed: {e}")
+
+    async def _publish_limit_exceeded_event(
+        self,
+        user_id: str,
+        tier: str,
+        minutes_used: int,
+        minutes_limit: int,
+        reason: Optional[str] = None,
+    ):
+        """
+        Publish a limit exceeded event to the frontend via LiveKit text stream.
+
+        The frontend should listen to the 'luframe.limit_exceeded' topic and
+        display an upgrade prompt to the user.
+        """
+        import json
+
+        try:
+            event_data = {
+                "type": "limit_exceeded",
+                "user_id": user_id,
+                "tier": tier,
+                "minutes_used": minutes_used,
+                "minutes_limit": minutes_limit,
+                "reason": reason or "Monthly meeting minutes limit reached",
+                "grace_period_seconds": GRACE_PERIOD_SECONDS,
+                "timestamp": int(time.time() * 1000),  # ms for frontend
+            }
+
+            await self.room.local_participant.send_text(
+                json.dumps(event_data),
+                topic=LIMIT_EXCEEDED_TOPIC,
+                attributes={
+                    "event_type": "limit_exceeded",
+                    "tier": tier,
+                    "user_id": user_id,
+                },
+            )
+
+            logger.info(
+                f"[LuframeAgent] Published limit_exceeded event: "
+                f"user={user_id}, tier={tier}, used={minutes_used}/{minutes_limit}"
+            )
+        except Exception as e:
+            logger.error(f"[LuframeAgent] Failed to publish limit_exceeded event: {e}")
+
+    async def _stop_premium_services(self):
+        """
+        Stop premium agent services when user exceeds limits.
+
+        This disables transcription, insights, document references, and other
+        AI-powered features. The meeting room stays open (users can talk)
+        but without AI assistance.
+
+        This is a graceful degradation - better than abruptly ending the meeting.
+        """
+        if self._services_stopped:
+            return
+
+        self._services_stopped = True
+        logger.warning("[LuframeAgent] Stopping premium services due to limit exceeded")
+
+        try:
+            # Stop all transcribers
+            for key, transcriber in list(self.transcribers.items()):
+                try:
+                    await transcriber.stop()
+                    logger.debug(f"[LuframeAgent] Stopped transcriber: {key}")
+                except Exception as e:
+                    logger.debug(f"[LuframeAgent] Error stopping transcriber {key}: {e}")
+            self.transcribers.clear()
+
+            # Stop insight analyzer (it will stop processing)
+            # The analyzer doesn't have a stop method, but clearing transcribers
+            # prevents new segments from being added
+
+            # Stop document referencer
+            if self.document_referencer:
+                await self.document_referencer.stop()
+
+            # Stop agenda tracker
+            if self.agenda_tracker:
+                await self.agenda_tracker.stop()
+
+            # Stop action classifier
+            if self.action_classifier:
+                await self.action_classifier.shutdown()
+
+            # Stop email draft generator
+            if self.email_draft_generator:
+                await self.email_draft_generator.shutdown()
+
+            # Publish final notification
+            import json
+            await self.room.local_participant.send_text(
+                json.dumps({
+                    "type": "services_stopped",
+                    "reason": "limit_exceeded",
+                    "message": "Meeting AI features have been disabled due to usage limits. Upgrade your plan to restore features.",
+                    "timestamp": int(time.time() * 1000),
+                }),
+                topic=LIMIT_EXCEEDED_TOPIC,
+                attributes={"event_type": "services_stopped"},
+            )
+
+            logger.warning(
+                "[LuframeAgent] Premium services stopped. "
+                "Meeting continues without AI features."
+            )
+        except Exception as e:
+            logger.error(f"[LuframeAgent] Error stopping premium services: {e}")
+
+    async def _restart_premium_services(self):
+        """
+        Restart premium agent services after user upgrades their subscription.
+
+        This re-enables transcription, insights, document references, and other
+        AI-powered features that were previously disabled due to limit exceeded.
+
+        Called when periodic limit check detects user now has available minutes
+        (e.g., after upgrading their subscription mid-meeting).
+        """
+        if not self._services_stopped:
+            return
+
+        logger.info("[LuframeAgent] Restarting premium services after subscription upgrade")
+
+        try:
+            # Reset state
+            self._services_stopped = False
+            self._limit_exceeded = False
+            self._limit_exceeded_time = None
+
+            # Restart document referencer
+            if self.document_referencer:
+                await self.document_referencer.start()
+                logger.debug("[LuframeAgent] Document referencer restarted")
+
+            # Restart agenda tracker
+            if self.agenda_tracker:
+                try:
+                    await self.agenda_tracker.start()
+                    logger.debug("[LuframeAgent] Agenda tracker restarted")
+                except Exception as e:
+                    logger.error(f"Failed to restart agenda tracker: {e}")
+
+            # Action classifier and email draft generator will be re-connected
+            # when insights come in (they don't need explicit restart)
+
+            # Restart transcribers for all current participants with audio tracks
+            for participant in self.room.remote_participants.values():
+                for track_pub in participant.track_publications.values():
+                    if (
+                        track_pub.track
+                        and track_pub.kind == rtc.TrackKind.KIND_AUDIO
+                        and isinstance(track_pub.track, rtc.RemoteAudioTrack)
+                    ):
+                        await self._start_transcriber(participant, track_pub.track)
+                        logger.debug(f"[LuframeAgent] Restarted transcriber for {participant.identity}")
+
+            # Publish service restored notification
+            import json
+            await self.room.local_participant.send_text(
+                json.dumps({
+                    "type": "services_restored",
+                    "reason": "subscription_upgraded",
+                    "message": "Meeting AI features have been restored. Thank you for upgrading!",
+                    "timestamp": int(time.time() * 1000),
+                }),
+                topic=LIMIT_EXCEEDED_TOPIC,
+                attributes={"event_type": "services_restored"},
+            )
+
+            logger.info(
+                "[LuframeAgent] Premium services RESTARTED successfully. "
+                "AI features are now available again."
+            )
+        except Exception as e:
+            logger.error(f"[LuframeAgent] Error restarting premium services: {e}")
+            # If restart fails, keep services stopped to avoid inconsistent state
+            self._services_stopped = True
+
+    async def _periodic_limit_check(self):
+        """
+        Periodically check limits during the meeting.
+
+        This catches cases where:
+        - User started within limits but exceeded during the meeting
+        - Frontend check was bypassed somehow
+        - User UPGRADED mid-meeting (services should be restarted)
+
+        IMPORTANT: Continue checking even after services are stopped.
+        This allows detecting subscription upgrades and restarting services.
+        """
+        try:
+            while True:
+                await asyncio.sleep(LIMIT_CHECK_INTERVAL_SECONDS)
+
+                # Run limit check (handles both stopping and restarting services)
+                await self._check_meeting_limits_async(initial_check=False)
+        except asyncio.CancelledError:
+            logger.debug("[LuframeAgent] Periodic limit check cancelled")
+        except Exception as e:
+            logger.error(f"[LuframeAgent] Periodic limit check error: {e}")
 
     def _get_meeting_owner_id(self) -> Optional[str]:
         """
@@ -612,9 +926,12 @@ class LuframeAgent:
                 logger.info(f"[LuframeAgent] Verified meeting owner from DB: {verified_owner}")
                 return verified_owner
             else:
+                # SECURITY FIX #7: Do NOT fall back to first-joiner logic
+                # If owner cannot be verified, usage will NOT be billed (fail-closed)
                 logger.warning(
                     f"[LuframeAgent] Could not verify meeting owner for room {self.room_id}. "
-                    "Will fall back to first-joiner logic."
+                    "Meeting usage will NOT be billed to prevent billing attacks. "
+                    "Ensure meetings are created through the frontend API."
                 )
                 return None
         except Exception as e:
@@ -722,13 +1039,10 @@ class LuframeAgent:
                 f"{self._first_human_join_time:.0f}"
             )
 
-        # Cache the meeting owner for usage billing (first human participant)
-        # We do this early because the owner might leave before the meeting ends
-        if not self._meeting_owner_id:
-            user_id = extract_user_id_from_identity(participant.identity)
-            if user_id:
-                self._meeting_owner_id = user_id
-                logger.info(f"[LuframeAgent] Meeting owner identified: {user_id}")
+        # SECURITY FIX #7: Do NOT cache meeting owner from first participant
+        # The owner MUST come from the verified database lookup only (_fetch_verified_meeting_owner)
+        # This prevents billing attacks where an attacker joins first to become the billing target
+        # The legacy _meeting_owner_id field is only set from _fetch_verified_meeting_owner now
 
         # Phase 4: Notify agenda tracker for late joiner sync
         # This publishes agenda sync event so late joiners get current state

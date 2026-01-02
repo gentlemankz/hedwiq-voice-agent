@@ -368,6 +368,15 @@ class UsageReporter:
         if session_id:
             metadata["sessionId"] = session_id
 
+        # Generate idempotency key to prevent duplicate counting on retries
+        # Key is based on session/room + 5-minute interval bucket
+        identifier = session_id or room_id
+        if identifier:
+            # 5-minute interval bucket (300000 ms)
+            import time
+            interval_bucket = int(time.time() * 1000) // 300000
+            metadata["idempotencyKey"] = f"minutes:{identifier}:{interval_bucket}"
+
         # Use retry wrapper for reliability
         return await self._report_usage_with_retry(
             user_id=user_id,
@@ -446,6 +455,7 @@ class UsageReporter:
         count: int = 1,
         meeting_id: Optional[str] = None,
         action_type: Optional[str] = None,
+        action_id: Optional[str] = None,
         source: str = "agent",
     ) -> UsageReportResult:
         """
@@ -456,6 +466,7 @@ class UsageReporter:
             count: Number of drafts generated (default 1)
             meeting_id: Optional meeting ID
             action_type: Optional action type that triggered the draft
+            action_id: Optional unique action ID for idempotency
             source: Source identifier for deduplication (default: "agent")
 
         Returns:
@@ -470,6 +481,14 @@ class UsageReporter:
             metadata["meetingId"] = meeting_id
         if action_type:
             metadata["actionType"] = action_type
+        if action_id:
+            metadata["actionId"] = action_id
+
+        # Generate idempotency key to prevent duplicate counting on retries
+        if meeting_id:
+            import time
+            unique_part = action_id or str(int(time.time() * 1000))
+            metadata["idempotencyKey"] = f"draft:{meeting_id}:{unique_part}"
 
         # Use retry wrapper for reliability
         return await self._report_usage_with_retry(
